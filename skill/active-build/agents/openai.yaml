@@ -1,0 +1,4 @@
+interface:
+  display_name: "active-build"
+  short_description: "Active workspace build CLI usage"
+  default_prompt: "Use $active-build to choose and run the correct active-build CLI command, showing the terminal command before execution."

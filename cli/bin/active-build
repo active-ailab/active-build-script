@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+PRG="$0"
+while [ -h "$PRG" ]; do
+  DIR="$(CDPATH= cd -- "$(dirname -- "$PRG")" && pwd)"
+  LINK="$(readlink "$PRG")"
+  case "$LINK" in
+    /*) PRG="$LINK" ;;
+    *) PRG="$DIR/$LINK" ;;
+  esac
+done
+
+CLI_DIR="$(CDPATH= cd -- "$(dirname -- "$PRG")/.." && pwd)"
+if [ -n "${PYTHONPATH:-}" ]; then
+  export PYTHONPATH="$CLI_DIR/src:$PYTHONPATH"
+else
+  export PYTHONPATH="$CLI_DIR/src"
+fi
+
+exec python3 -m active_build "$@"

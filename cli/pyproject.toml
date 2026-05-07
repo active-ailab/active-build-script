@@ -1,0 +1,23 @@
+[project]
+name = "active-build"
+version = "0.1.0"
+description = "Compatible active-build CLI migrated from hmbuild.py."
+requires-python = ">=3.8"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Zepp Health Active BU AI Lab" }
+]
+dependencies = []
+
+[project.scripts]
+active-build = "active_build.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
