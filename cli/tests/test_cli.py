@@ -333,6 +333,73 @@ class ActiveBuildCliTest(unittest.TestCase):
             state = json.loads((build_dir / cli.STATE_FILE).read_text(encoding="utf-8"))
             self.assertEqual(state["threads"], "8")
 
+    def test_compare_repo_manifest_accepts_repo_generated_include(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            manifests = root / ".repo" / "manifests"
+            manifests.mkdir(parents=True)
+            (root / ".repo" / "manifest.xml").write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                "<manifest>\n"
+                '  <include name="cologne.xml" />\n'
+                "</manifest>\n",
+                encoding="utf-8",
+            )
+            (manifests / "huamiOS.xml").write_text("<manifest />\n", encoding="utf-8")
+            (manifests / "cologne.xml").write_text(
+                '<manifest><project name="cologne" /></manifest>\n',
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(cli, "confirm_manifest_choice", return_value=True) as confirm:
+                self.assertTrue(cli.compare_repo_manifest(str(root), "cologne"))
+
+            confirm.assert_called_once_with(False)
+
+    def test_compare_repo_manifest_accepts_legacy_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            repo = root / ".repo"
+            manifests = repo / "manifests"
+            manifests.mkdir(parents=True)
+            (manifests / "huamiOS.xml").write_text("<manifest />\n", encoding="utf-8")
+            (manifests / "cologne.xml").write_text(
+                '<manifest><project name="cologne" /></manifest>\n',
+                encoding="utf-8",
+            )
+            (repo / "manifest.xml").symlink_to(manifests / "cologne.xml")
+
+            with mock.patch.object(cli, "confirm_manifest_choice", return_value=True) as confirm:
+                self.assertTrue(cli.compare_repo_manifest(str(root), "cologne"))
+
+            confirm.assert_called_once_with(False)
+
+    def test_compare_repo_manifest_flags_different_repo_generated_include(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            manifests = root / ".repo" / "manifests"
+            manifests.mkdir(parents=True)
+            (root / ".repo" / "manifest.xml").write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                "<manifest>\n"
+                '  <include name="atlas.xml" />\n'
+                "</manifest>\n",
+                encoding="utf-8",
+            )
+            (manifests / "huamiOS.xml").write_text("<manifest />\n", encoding="utf-8")
+            (manifests / "cologne.xml").write_text(
+                '<manifest><project name="cologne" /></manifest>\n',
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(cli, "confirm_manifest_choice", return_value=True) as confirm:
+                self.assertTrue(cli.compare_repo_manifest(str(root), "cologne"))
+
+            confirm.assert_called_once_with(True)
+
     def test_run_current_config_firmware_skips_version_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

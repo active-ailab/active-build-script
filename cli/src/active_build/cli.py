@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
@@ -764,6 +765,37 @@ def confirm_manifest_choice(should_switch):
         print(f"{RED}请输入 y/yes 或 n/no{RESET}")
 
 
+def read_manifest_includes(manifest_path):
+    try:
+        root = ET.parse(manifest_path).getroot()
+    except (ET.ParseError, OSError):
+        return []
+
+    includes = []
+    for node in root.findall("include"):
+        name = node.get("name")
+        if name:
+            includes.append(name)
+    return includes
+
+
+def manifest_matches_xml(manifest_path, current_xml_name, include_names, xml_name, xml_path):
+    if current_xml_name == xml_name:
+        return True
+    if xml_name in include_names:
+        return True
+    return filecmp.cmp(manifest_path, xml_path, shallow=False)
+
+
+def print_manifest_check_summary(current_xml, target_xml, should_switch, missing_target=None):
+    print(f"\n{YELLOW}检查仓库 XML 配置...{RESET}")
+    print(f"{YELLOW}当前 XML: {current_xml}{RESET}")
+    print(f"{YELLOW}目标 XML: {target_xml}{RESET}")
+    if missing_target:
+        print(f"{RED}目标 XML 文件不存在: {missing_target}{RESET}")
+    print(f"{YELLOW}是否需要变更 XML: {'是' if should_switch else '否'}{RESET}")
+
+
 def compare_repo_manifest(project_root, project):
     repo_dir = os.path.join(project_root, ".repo")
     manifest_path = os.path.join(repo_dir, "manifest.xml")
@@ -779,42 +811,45 @@ def compare_repo_manifest(project_root, project):
 
     current_manifest_realpath = os.path.realpath(manifest_path)
     current_xml_name = os.path.basename(current_manifest_realpath)
+    current_include_names = read_manifest_includes(manifest_path)
     current_display_name = current_xml_name if current_xml_name else "manifest.xml"
-
-    print(f"\n{YELLOW}检查仓库 XML 配置...{RESET}")
-    print(f"{YELLOW}当前 manifest: {manifest_path}{RESET}")
-    print(f"{YELLOW}当前实际指向: {current_manifest_realpath}{RESET}")
+    if current_include_names:
+        current_display_name = ", ".join(current_include_names)
 
     huamios_xml_path = os.path.join(manifests_dir, "huamiOS.xml")
     if os.path.exists(huamios_xml_path):
-        if filecmp.cmp(manifest_path, huamios_xml_path, shallow=False):
-            print(f"{GREEN}当前使用的 XML: huamiOS.xml{RESET}")
-            print(f"{GREEN}manifest.xml 与 huamiOS.xml 一致{RESET}")
-            print(f"{YELLOW}是否需要变更 XML: 否{RESET}")
+        if manifest_matches_xml(
+            manifest_path,
+            current_xml_name,
+            current_include_names,
+            "huamiOS.xml",
+            huamios_xml_path,
+        ):
+            print_manifest_check_summary("huamiOS.xml", "huamiOS.xml", False)
             return confirm_manifest_choice(False)
-        print(f"{YELLOW}manifest.xml 与 huamiOS.xml 不一致，继续检查项目 XML{RESET}")
-    else:
-        print(f"{YELLOW}未找到 huamiOS.xml，继续检查项目 XML{RESET}")
 
     project_xml_name = f"{project}.xml"
     project_xml_path = os.path.join(manifests_dir, project_xml_name)
     if not os.path.exists(project_xml_path):
-        print(f"{RED}未找到当前项目对应的 XML: {project_xml_path}{RESET}")
-        print(f"{YELLOW}当前使用的 XML: {current_display_name}{RESET}")
-        print(f"{YELLOW}当前编译项目目标 XML: {project_xml_name}{RESET}")
-        print(f"{RED}无法确认是否需要切换 XML{RESET}")
+        print_manifest_check_summary(
+            current_display_name,
+            project_xml_name,
+            True,
+            missing_target=project_xml_path,
+        )
         return confirm_manifest_choice(True)
 
-    if filecmp.cmp(manifest_path, project_xml_path, shallow=False):
-        print(f"{GREEN}当前使用的 XML: {project_xml_name}{RESET}")
-        print(f"{GREEN}manifest.xml 与 {project_xml_name} 一致{RESET}")
-        print(f"{YELLOW}是否需要变更 XML: 否{RESET}")
+    if manifest_matches_xml(
+        manifest_path,
+        current_xml_name,
+        current_include_names,
+        project_xml_name,
+        project_xml_path,
+    ):
+        print_manifest_check_summary(project_xml_name, project_xml_name, False)
         return confirm_manifest_choice(False)
 
-    print(f"{YELLOW}当前使用的 XML: {current_display_name}{RESET}")
-    print(f"{YELLOW}当前编译项目目标 XML: {project_xml_name}{RESET}")
-    print(f"{RED}manifest.xml 与 {project_xml_name} 不一致{RESET}")
-    print(f"{YELLOW}是否需要变更 XML: 是{RESET}")
+    print_manifest_check_summary(current_display_name, project_xml_name, True)
     return confirm_manifest_choice(True)
 
 
