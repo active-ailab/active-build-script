@@ -86,6 +86,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertIsNone(plan.build_type)
             self.assertEqual(plan.threads, "8")
             self.assertEqual(plan.version, "10.0.0")
+            self.assertFalse(plan.version_explicit)
             self.assertTrue(plan.reload_defconfig)
 
     def test_parse_uppercase_short_args_aliases(self):
@@ -104,6 +105,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.mode, "sensorhub")
             self.assertEqual(plan.threads, "6")
             self.assertEqual(plan.version, "1.2.3")
+            self.assertTrue(plan.version_explicit)
             self.assertTrue(plan.reload_defconfig)
 
     def test_parse_current_build_modes_and_split_types(self):
@@ -123,6 +125,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertTrue(plan.use_current_config)
             self.assertEqual(plan.mode, "firmware")
             self.assertEqual(plan.threads, "12")
+            self.assertFalse(plan.version_explicit)
 
             plan = cli.parse_args_or_prompt(
                 str(root),
@@ -132,6 +135,16 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.mode, "sensorhub-ota")
             self.assertEqual(plan.main_build_type, "debug")
             self.assertEqual(plan.sensorhub_build_type, "release")
+
+            plan = cli.parse_args_or_prompt(
+                str(root),
+                str(root / "configs"),
+                ["-c", "fw", "-v", "4.0.0"],
+            )
+            self.assertTrue(plan.use_current_config)
+            self.assertEqual(plan.mode, "firmware")
+            self.assertEqual(plan.version, "4.0.0")
+            self.assertTrue(plan.version_explicit)
 
     def test_load_last_threads_keeps_legacy_file_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +183,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.mode, "sensorhub-ota")
             self.assertEqual(plan.threads, "8")
             self.assertEqual(plan.version, "2.0.0")
+            self.assertTrue(plan.version_explicit)
 
             plan = cli.parse_args_or_prompt(
                 str(root),
@@ -306,6 +320,7 @@ class ActiveBuildCliTest(unittest.TestCase):
                 threads="8",
                 reload_defconfig=True,
                 version="10.0.0",
+                version_explicit=True,
                 main_build_type="debug",
                 sensorhub_build_type="release",
             )
@@ -327,11 +342,90 @@ class ActiveBuildCliTest(unittest.TestCase):
                 "make BUILD_TYPE=release BUILD_DIR=out_hub APPDIR=out_hub",
                 commands,
             )
+            self.assertLess(
+                commands.index("make BUILD_TYPE=release BUILD_DIR=out_hub APPDIR=out_hub"),
+                commands.index("make silentoldconfig"),
+            )
+            self.assertEqual(
+                [command for command in commands if "silentoldconfig" in command],
+                ["make silentoldconfig"],
+            )
+            self.assertLess(
+                commands.index("make silentoldconfig"),
+                commands.index("make ota -j8"),
+            )
             self.assertIn("make ota -j8", commands)
+            self.assertIn(
+                'BOARD_FIRMWARE_VERSION="10.0.0"',
+                (build_dir / ".config").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "BOARD_FIRMWARE_VERSION",
+                (build_dir / "out_hub" / ".config").read_text(encoding="utf-8"),
+            )
             self.assertTrue((root / "platform" / "board" / "mhs003" / "products" / "cologne" / "sensorhub" / "sensorhub@mhs003_sign.bin").exists())
             self.assertFalse((root / cli.LEGACY_LAST_THREADS_FILE).exists())
             state = json.loads((build_dir / cli.STATE_FILE).read_text(encoding="utf-8"))
             self.assertEqual(state["threads"], "8")
+
+    def test_run_build_plan_sensorhub_single_explicit_version_overrides_out_hub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            build_dir = root / "build"
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+                if "mhs003_cologne_defconfig" in command:
+                    (build_dir / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+                if "mhs003_cologne_sensorhub_defconfig" in command:
+                    (build_dir / "out_hub").mkdir(exist_ok=True)
+                    (build_dir / "out_hub" / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+                if "BUILD_DIR=out_hub" in command and "silentoldconfig" not in command:
+                    out = build_dir / "out_hub" / "sensorhub@mhs003" / "binary"
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "sensorhub@mhs003_sign.bin").write_bytes(b"signed")
+
+            plan = cli.BuildPlan(
+                family="mhs003",
+                project="cologne",
+                mode="sensorhub",
+                threads="8",
+                reload_defconfig=True,
+                version="3.0.0",
+                version_explicit=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "compare_repo_manifest", return_value=True
+            ), mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                cli.run_build_plan(
+                    cli.normalize_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(build_dir),
+                )
+
+            self.assertEqual(
+                [command for command in commands if "silentoldconfig" in command],
+                ["make silentoldconfig APPDIR=out_hub"],
+            )
+            self.assertIn(
+                'BOARD_FIRMWARE_VERSION="3.0.0"',
+                (build_dir / "out_hub" / ".config").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "BOARD_FIRMWARE_VERSION",
+                (build_dir / ".config").read_text(encoding="utf-8"),
+            )
 
     def test_compare_repo_manifest_accepts_repo_generated_include(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -437,6 +531,47 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(commands, ["make -j8"])
             self.assertEqual((build_dir / ".config").read_text(encoding="utf-8"), config_text)
 
+    def test_run_current_config_firmware_explicit_version_overrides_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            build_dir = root / "build"
+            (build_dir / ".config").write_text(
+                'HMI_BUILD_BOARD="mhs003"\n'
+                'HMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n'
+                'BOARD_FIRMWARE_VERSION="1.2.3"\n',
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+
+            plan = cli.BuildPlan(
+                mode="fw",
+                threads="8",
+                use_current_config=True,
+                version="10.0.0",
+                version_explicit=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "run_cmd", side_effect=fake_run_cmd
+            ):
+                cli.run_build_plan(
+                    cli.normalize_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(build_dir),
+                )
+
+            self.assertEqual(commands, ["make silentoldconfig", "make -j8"])
+            self.assertIn(
+                'BOARD_FIRMWARE_VERSION="10.0.0"',
+                (build_dir / ".config").read_text(encoding="utf-8"),
+            )
+
     def test_interactive_quick_and_advanced_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -457,6 +592,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.mode, "sensorhub")
             self.assertTrue(plan.reload_defconfig)
             self.assertEqual(plan.version, "3.0.0")
+            self.assertTrue(plan.version_explicit)
             self.assertEqual(plan.build_type, "release_log")
             self.assertEqual(plan.main_build_type, "debug")
             self.assertEqual(plan.sensorhub_build_type, "release")

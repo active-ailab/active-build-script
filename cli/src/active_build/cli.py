@@ -85,6 +85,7 @@ class BuildPlan:
     threads: str = None
     reload_defconfig: bool = False
     version: str = DEFAULT_VERSION
+    version_explicit: bool = False
     build_type: str = None
     main_build_type: str = None
     sensorhub_build_type: str = None
@@ -359,6 +360,7 @@ def normalize_plan(plan):
         fail(f"线程数必须是正整数: {plan.threads}")
 
     plan.reload_defconfig = normalize_bool(plan.reload_defconfig)
+    plan.version_explicit = normalize_bool(plan.version_explicit)
     plan.use_current_config = normalize_bool(plan.use_current_config)
     plan.log = normalize_bool(plan.log)
 
@@ -405,6 +407,8 @@ def plan_from_json(path, cwd):
     unknown = sorted(set(data.keys()) - allowed)
     if unknown:
         fail(f"BuildPlan 包含未知字段: {', '.join(unknown)}")
+    if "version" in data and "version_explicit" not in data:
+        data["version_explicit"] = True
 
     plan = BuildPlan(**data)
     if plan.workspace and not os.path.isabs(plan.workspace):
@@ -466,6 +470,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
             threads=args.threads or default_threads,
             reload_defconfig=args.reload_defconfig,
             version=args.version or DEFAULT_VERSION,
+            version_explicit=args.version is not None,
             build_type=args.build_type,
             main_build_type=args.main_build_type,
             sensorhub_build_type=args.sensorhub_build_type,
@@ -485,6 +490,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
         threads=args.threads or default_threads,
         reload_defconfig=True if args.mode and args.mode.lower() in {"debug", "release", "sim"} else args.reload_defconfig,
         version=args.version or DEFAULT_VERSION,
+        version_explicit=args.version is not None,
         build_type=args.build_type,
         main_build_type=args.main_build_type,
         sensorhub_build_type=args.sensorhub_build_type,
@@ -708,6 +714,7 @@ def collect_interactive_plan(project_root, configs_dir):
         mode = prompt_choice("请选择编译模式", ["release", "debug", "sim"])
         reload_defconfig = True
         version = DEFAULT_VERSION
+        version_explicit = False
         build_type = None
         main_build_type = None
         sensorhub_build_type = None
@@ -719,8 +726,10 @@ def collect_interactive_plan(project_root, configs_dir):
         )
         reload_defconfig = prompt_yes_no("是否重新加载 defconfig", False)
         version = DEFAULT_VERSION
+        version_explicit = False
         if not prompt_yes_no("是否使用默认版本 10.0.0", True):
             version = input(f"{YELLOW}请输入版本号: {RESET}").strip()
+            version_explicit = True
         build_type = prompt_optional_build_type("请选择全局 BUILD_TYPE")
         main_build_type = prompt_optional_build_type("请选择 main/fw/ota 阶段 BUILD_TYPE")
         sensorhub_build_type = prompt_optional_build_type("请选择 sensorhub 阶段 BUILD_TYPE")
@@ -735,6 +744,7 @@ def collect_interactive_plan(project_root, configs_dir):
             threads=threads,
             reload_defconfig=reload_defconfig,
             version=version,
+            version_explicit=version_explicit,
             build_type=build_type,
             main_build_type=main_build_type,
             sensorhub_build_type=sensorhub_build_type,
@@ -982,13 +992,26 @@ def patch_config_version(config_path, version):
 
 
 def apply_version_override(build_dir, plan, logger=None, appdir=None):
-    if plan.use_current_config:
+    if plan.use_current_config and not plan.version_explicit:
         print(f"{YELLOW}当前配置编译已跳过 .config 版本覆写{RESET}")
         if logger:
             logger.line("skip version override: current config")
         return
 
     if appdir:
+        if plan.version_explicit and plan.mode == "sensorhub":
+            config_path = os.path.join(build_dir, appdir, ".config")
+            patch_config_version(config_path, plan.version)
+            run_cmd(
+                make_cmd(plan, "silentoldconfig", stage="sensorhub", appdir=appdir),
+                logger,
+            )
+            print(
+                f"{GREEN}已覆写 {config_path} 的 BOARD_FIRMWARE_VERSION={plan.version}{RESET}"
+            )
+            if logger:
+                logger.line(f"version override: {config_path} -> {plan.version}")
+            return
         print(f"{YELLOW}已跳过 {appdir} .config 版本覆写{RESET}")
         if logger:
             logger.line(f"skip version override: {appdir}")
@@ -1132,6 +1155,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 logger,
                 clean=plan.reload_defconfig,
             )
+            apply_version_override(build_dir, plan, logger)
             run_cmd(make_cmd(plan, stage="main", threads=plan.threads), logger)
         elif plan.mode == "sensorhub-ota":
             build_sensorhub(
@@ -1143,6 +1167,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 logger,
                 clean=plan.reload_defconfig,
             )
+            apply_version_override(build_dir, plan, logger)
             run_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), logger)
         else:
             fail(f"未实现的构建模式: {plan.mode}")

@@ -102,6 +102,7 @@ CLI 接收的 BuildPlan 字段如下：
   "threads": "8",
   "reload_defconfig": true,
   "version": "10.0.0",
+  "version_explicit": true,
   "build_type": null,
   "main_build_type": null,
   "sensorhub_build_type": "release",
@@ -121,9 +122,18 @@ CLI 接收的 BuildPlan 字段如下：
 - 但在 CLI 实际拼接 `make` 指令时，只有 `release` 会被写入运行命令；其他 build type 只保留在 BuildPlan 语义层。
 - `threads` 必须是正整数。agent 生成 BuildPlan 时，用户未指定则默认用 `"8"`。
 - `reload_defconfig` 在完整重配时通常为 `true`；只有明确延用当前工作区已有编译配置时，才设为 `false`。
+- `version` 是要写入 `BOARD_FIRMWARE_VERSION` 的版本号；命令行只有显式传入 `-v/-V` 时才触发版本覆写。
+- `version_explicit` 表示 BuildPlan 是否显式要求版本覆写；BuildPlan JSON 中包含 `version` 但未写 `version_explicit` 时，CLI 会按 `true` 处理。
 - `use_current_config` 为 `true` 时，可省略 `family` 和 `project`，由 CLI 从 `build/.config` 推断。
 - `workspace` 可以是工作区根目录，也可以是其 `build/` 目录。
 - `log` 控制是否写入 `build/logs/active-build/`。
+
+版本覆写位置与触发规则：
+
+- main/fw/ota 阶段覆写 `build/.config`，随后执行 `make silentoldconfig`。
+- 纯 `sensorhub` 模式显式带 `-v` 或 `version_explicit=true` 时，覆写 `build/out_hub/.config`，随后执行 `make silentoldconfig APPDIR=out_hub`。
+- `sensorhub-fw`、`sensorhub-ota` 组合模式下，sensorhub 的 `out_hub` 阶段不覆写；后续 main/fw/ota 阶段只覆写一次 `build/.config`。
+- `use_current_config=true` 默认跳过版本覆写；如果显式传入 `-v` 或设置 `version_explicit=true`，仍会按对应阶段覆写一次。
 
 ## 用户只说“编译”时
 
@@ -157,6 +167,7 @@ configs/<family>/<family>_<project>_sensorhub_defconfig
   "threads": "8",
   "reload_defconfig": true,
   "version": "10.0.0",
+  "version_explicit": false,
   "build_type": null,
   "main_build_type": null,
   "sensorhub_build_type": null,
