@@ -4,6 +4,7 @@ import filecmp
 import json
 import multiprocessing
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -39,6 +40,7 @@ MHS003_ALLOWED_VARIANT_SUFFIXES = {"2pd", "64m"}
 HELP_TEXT = """\
 用法:
   active-build
+  active-build bstyle [-i input.style] [-o output.bstyle] [-f family] [-p project] [-w workspace]
   active-build -c <mode> [-b build-type] [-a main-type] [-u sensorhub-type] [-j threads]
   active-build -f <family> -p <project> -m <mode> [-j threads] [options]
   active-build -i <plan-file>
@@ -73,6 +75,12 @@ HELP_TEXT = """\
 已移除:
   active-build <family> <project> <mode> [threads]
   请改用: active-build -f <family> -p <project> -m <mode> [-j threads]
+
+bstyle:
+  active-build bstyle 使用当前 workspace 下 build/cmd/linux32 或 linux64 的 bstylenc。
+  active-build bstylenc 是兼容别名。
+  -i/-o 直接传递给底层 bstylenc；-o 不传时自动生成同目录同名 .bstyle。
+  底层 bstylenc 的 -w/-h/-p 默认从 configs/<family>/<family>_<project>_defconfig 推导。
 """
 
 
@@ -91,6 +99,21 @@ class BuildPlan:
     sensorhub_build_type: str = None
     use_current_config: bool = False
     workspace: str = None
+    log: bool = False
+
+
+@dataclass
+class BstylencPlan:
+    action: str = "bstylenc"
+    family: str = None
+    project: str = None
+    input: str = None
+    output: str = None
+    workspace: str = None
+    width: str = None
+    height: str = None
+    pixel_ratio: str = None
+    dry_run: bool = False
     log: bool = False
 
 
@@ -369,6 +392,39 @@ def normalize_plan(plan):
     return plan
 
 
+def normalize_optional_positive_int(value, label):
+    if value in {None, ""}:
+        return None
+    text = str(value).strip()
+    if text.isdigit() and int(text) > 0:
+        return text
+    fail(f"{label} 必须是正整数: {value}")
+
+
+def normalize_optional_positive_float(value, label):
+    if value in {None, ""}:
+        return None
+    text = str(value).strip().strip('"')
+    try:
+        number = float(text)
+    except ValueError:
+        fail(f"{label} 必须是正数: {value}")
+    if number <= 0:
+        fail(f"{label} 必须是正数: {value}")
+    return text
+
+
+def normalize_bstylenc_plan(plan):
+    if plan.action != "bstylenc":
+        fail(f"不支持的 BstylencPlan action: {plan.action}")
+    plan.width = normalize_optional_positive_int(plan.width, "width")
+    plan.height = normalize_optional_positive_int(plan.height, "height")
+    plan.pixel_ratio = normalize_optional_positive_float(plan.pixel_ratio, "pixel_ratio")
+    plan.dry_run = normalize_bool(plan.dry_run)
+    plan.log = normalize_bool(plan.log)
+    return plan
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-f", "-F", dest="family")
@@ -389,6 +445,38 @@ def build_arg_parser():
     return parser
 
 
+def bstylenc_arg_parser():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-f", "-F", dest="family")
+    parser.add_argument("-p", "-P", dest="project")
+    parser.add_argument("-i", "-I", dest="input")
+    parser.add_argument("-o", "-O", dest="output")
+    parser.add_argument("-w", "-W", dest="workspace")
+    parser.add_argument("-l", "-L", dest="log", action="store_true")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true")
+    parser.add_argument("-h", "-H", "--help", dest="help", action="store_true")
+    return parser
+
+
+def parse_bstylenc_args(argv):
+    parser = bstylenc_arg_parser()
+    args = parser.parse_args(argv)
+    if args.help:
+        print_help()
+        sys.exit(0)
+    return normalize_bstylenc_plan(
+        BstylencPlan(
+            family=args.family,
+            project=args.project,
+            input=args.input,
+            output=args.output,
+            workspace=args.workspace,
+            dry_run=args.dry_run,
+            log=args.log,
+        )
+    )
+
+
 def plan_from_json(path, cwd):
     plan_path = path
     if not os.path.isabs(plan_path):
@@ -403,17 +491,26 @@ def plan_from_json(path, cwd):
 
     if not isinstance(data, dict):
         fail("BuildPlan JSON 顶层必须是对象")
-    allowed = set(BuildPlan.__dataclass_fields__.keys())
+    action = data.get("action", "build")
+    if action == "build":
+        allowed = set(BuildPlan.__dataclass_fields__.keys())
+    elif action == "bstylenc":
+        allowed = set(BstylencPlan.__dataclass_fields__.keys())
+    else:
+        fail(f"不支持的 BuildPlan action: {action}")
+
     unknown = sorted(set(data.keys()) - allowed)
     if unknown:
         fail(f"BuildPlan 包含未知字段: {', '.join(unknown)}")
-    if "version" in data and "version_explicit" not in data:
+    if action == "build" and "version" in data and "version_explicit" not in data:
         data["version_explicit"] = True
 
-    plan = BuildPlan(**data)
+    plan = BuildPlan(**data) if action == "build" else BstylencPlan(**data)
     if plan.workspace and not os.path.isabs(plan.workspace):
         plan.workspace = os.path.abspath(os.path.join(cwd, plan.workspace))
-    return normalize_plan(plan)
+    if action == "build":
+        return normalize_plan(plan)
+    return normalize_bstylenc_plan(plan)
 
 
 def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=None):
@@ -696,6 +793,51 @@ def prompt_optional_build_type(label):
     return None if choice == "默认" else choice
 
 
+def default_bstyle_output(input_path):
+    return os.path.splitext(input_path)[0] + ".bstyle"
+
+
+def prompt_style_input():
+    while True:
+        try:
+            raw = input(f"{YELLOW}请输入 style 输入文件路径: {RESET}").strip()
+        except KeyboardInterrupt:
+            fail("\n用户中断操作")
+        if not raw:
+            print(f"{RED}style 输入文件路径不能为空{RESET}")
+            continue
+        if not raw.endswith(".style"):
+            print(f"{RED}输入文件必须是 .style: {raw}{RESET}")
+            continue
+        if not os.path.isfile(raw):
+            print(f"{RED}style 输入文件不存在: {raw}{RESET}")
+            continue
+        return raw
+
+
+def collect_interactive_bstylenc_plan(project_root, family, project):
+    input_path = prompt_style_input()
+    output_path = default_bstyle_output(input_path)
+    print(f"{YELLOW}输出文件默认: {output_path}{RESET}")
+    if prompt_yes_no("是否修改输出路径", False):
+        try:
+            output_path = input(f"{YELLOW}请输入 bstyle 输出文件路径: {RESET}").strip()
+        except KeyboardInterrupt:
+            fail("\n用户中断操作")
+        if not output_path:
+            fail("bstyle 输出文件路径不能为空")
+
+    return normalize_bstylenc_plan(
+        BstylencPlan(
+            family=family,
+            project=project,
+            input=input_path,
+            output=output_path,
+            workspace=project_root,
+        )
+    )
+
+
 def collect_interactive_plan(project_root, configs_dir):
     last_threads = load_last_threads(project_root)
     default_threads = int(last_threads) if last_threads else multiprocessing.cpu_count() * 2
@@ -709,7 +851,7 @@ def collect_interactive_plan(project_root, configs_dir):
         fail(f"{family} 下未找到可编译的 defconfig")
 
     project = prompt_choice(f"请选择 {family} 项目", projects)
-    entry = prompt_choice("请选择构建入口", ["快速完整编译", "高级构建"])
+    entry = prompt_choice("请选择构建入口", ["快速完整编译", "高级构建", "bstyle 编译"])
     if entry == "快速完整编译":
         mode = prompt_choice("请选择编译模式", ["release", "debug", "sim"])
         reload_defconfig = True
@@ -719,7 +861,7 @@ def collect_interactive_plan(project_root, configs_dir):
         main_build_type = None
         sensorhub_build_type = None
         log = False
-    else:
+    elif entry == "高级构建":
         mode = prompt_choice(
             "请选择高级构建模式",
             ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
@@ -734,6 +876,8 @@ def collect_interactive_plan(project_root, configs_dir):
         main_build_type = prompt_optional_build_type("请选择 main/fw/ota 阶段 BUILD_TYPE")
         sensorhub_build_type = prompt_optional_build_type("请选择 sensorhub 阶段 BUILD_TYPE")
         log = prompt_yes_no("是否写入构建日志", False)
+    else:
+        return collect_interactive_bstylenc_plan(project_root, family, project)
 
     threads = prompt_threads(default_threads)
     return normalize_plan(
@@ -896,6 +1040,136 @@ def resolve_sim_defconfig(project_root, family, project):
     for sim_defconfig in sim_candidates:
         print(f"{RED}  - {sim_defconfig}{RESET}")
     sys.exit(1)
+
+
+def find_main_defconfig(configs_dir, family, project):
+    if not family or not project:
+        return None
+    path = os.path.join(configs_dir, family, f"{family}_{project}_defconfig")
+    return path if os.path.exists(path) else None
+
+
+def find_bstylenc_project_families(configs_dir, project):
+    if not project or not os.path.isdir(configs_dir):
+        return []
+    families = []
+    for family in sorted(os.listdir(configs_dir)):
+        family_dir = os.path.join(configs_dir, family)
+        if not os.path.isdir(family_dir):
+            continue
+        if find_main_defconfig(configs_dir, family, project):
+            families.append(family)
+    return families
+
+
+def infer_bstylenc_target(plan, configs_dir, build_dir):
+    state = load_build_state(build_dir)
+    config_path = os.path.join(build_dir, ".config")
+    config_family = read_config_value(config_path, "HMI_BUILD_BOARD")
+    config_project = read_config_value(config_path, "HMI_PRODUCT_CUSTOMIZE_DIR")
+
+    if not plan.project:
+        plan.project = state.get("project") or config_project
+    if not plan.project:
+        fail("无法推导 project，请使用 -p <project>")
+
+    if not plan.family:
+        state_family = state.get("family") if state.get("project") == plan.project else None
+        current_family = config_family if config_project == plan.project else None
+        plan.family = state_family or current_family
+
+    if not plan.family:
+        families = find_bstylenc_project_families(configs_dir, plan.project)
+        if len(families) == 1:
+            plan.family = families[0]
+        elif len(families) > 1:
+            fail(f"project {plan.project} 匹配多个 family: {', '.join(families)}，请使用 -f <family>")
+        else:
+            fail(f"无法根据 project 推导 family: {plan.project}")
+
+    defconfig = find_main_defconfig(configs_dir, plan.family, plan.project)
+    if defconfig is None:
+        expected = os.path.join(configs_dir, plan.family, f"{plan.family}_{plan.project}_defconfig")
+        fail(f"主 defconfig 不存在: {expected}")
+    return defconfig
+
+
+def infer_single_style_input(start_dir):
+    styles = [
+        name
+        for name in sorted(os.listdir(start_dir))
+        if os.path.isfile(os.path.join(start_dir, name)) and name.endswith(".style")
+    ]
+    if len(styles) == 1:
+        return os.path.join(start_dir, styles[0])
+    if len(styles) > 1:
+        fail(f"当前目录存在多个 .style 文件，请使用 -i 指定: {', '.join(styles)}")
+    fail("未指定 -i，且当前目录没有可自动推导的 .style 文件")
+
+
+def resolve_bstylenc_input_output(plan, start_dir):
+    if not plan.input:
+        plan.input = infer_single_style_input(start_dir)
+    if not plan.input.endswith(".style"):
+        fail(f"输入文件必须是 .style: {plan.input}")
+    if not os.path.isfile(plan.input):
+        fail(f"style 输入文件不存在: {plan.input}")
+    if not plan.output:
+        plan.output = default_bstyle_output(plan.input)
+
+
+def parse_bstylenc_params_from_defconfig(defconfig_path, plan):
+    if plan.width is None:
+        plan.width = read_config_value(defconfig_path, "STORYBOARD_DISPLAY_WIDTH") or read_config_value(
+            defconfig_path, "AMOLED_PANEL_WIDTH"
+        )
+    if plan.height is None:
+        plan.height = read_config_value(defconfig_path, "STORYBOARD_DISPLAY_HEIGHT") or read_config_value(
+            defconfig_path, "AMOLED_PANEL_HEIGHT"
+        )
+    if plan.pixel_ratio is None:
+        plan.pixel_ratio = read_config_value(defconfig_path, "HM_FONT_DENSTIY") or read_config_value(
+            defconfig_path, "HM_DISPLAY_DENSTIY"
+        )
+    if plan.width is None:
+        fail(f"无法从 defconfig 推导 STORYBOARD_DISPLAY_WIDTH/AMOLED_PANEL_WIDTH: {defconfig_path}")
+    if plan.height is None:
+        fail(f"无法从 defconfig 推导 STORYBOARD_DISPLAY_HEIGHT/AMOLED_PANEL_HEIGHT: {defconfig_path}")
+    if plan.pixel_ratio is None:
+        fail(f"无法从 defconfig 推导 HM_FONT_DENSTIY/HM_DISPLAY_DENSTIY: {defconfig_path}")
+    normalize_bstylenc_plan(plan)
+
+
+def resolve_bstylenc_tool(project_root):
+    arch = platform.architecture()[0]
+    preferred = "linux64" if arch == "64bit" else "linux32"
+    fallback = "linux32" if preferred == "linux64" else "linux64"
+    checked = [
+        os.path.join(project_root, "build", "cmd", preferred, "bstylenc"),
+        os.path.join(project_root, "build", "cmd", fallback, "bstylenc"),
+    ]
+    for path in checked:
+        if os.path.isfile(path):
+            return path
+    fail("未找到 bstylenc，已检查: " + ", ".join(checked))
+
+
+def make_bstylenc_cmd(tool_path, plan):
+    return quote_cmd(
+        [
+            tool_path,
+            "-i",
+            plan.input,
+            "-o",
+            plan.output,
+            "-w",
+            plan.width,
+            "-h",
+            plan.height,
+            "-p",
+            plan.pixel_ratio,
+        ]
+    )
 
 
 def check_project_switch_requires_reload(build_dir, plan):
@@ -1090,6 +1364,44 @@ def build_sensorhub(build_dir, plan, main_defconfig, sensorhub_defconfig, sensor
     copy_sensorhub_outputs(build_dir, plan.family, sensorhub_target_dir, logger)
 
 
+def run_bstylenc_plan(plan, start_dir, project_root, configs_dir, build_dir):
+    plan = normalize_bstylenc_plan(plan)
+    resolve_bstylenc_input_output(plan, start_dir)
+    needs_defconfig = plan.width is None or plan.height is None or plan.pixel_ratio is None
+    defconfig = None
+    if needs_defconfig:
+        defconfig = infer_bstylenc_target(plan, configs_dir, build_dir)
+        parse_bstylenc_params_from_defconfig(defconfig, plan)
+    tool_path = resolve_bstylenc_tool(project_root)
+    command = make_bstylenc_cmd(tool_path, plan)
+    logger = BuildLogger(build_dir, plan.family, plan.project, plan.log)
+    success = False
+
+    try:
+        print(f"\n{YELLOW}脚本启动目录: {start_dir}{RESET}")
+        print(f"{YELLOW}项目根目录: {project_root}{RESET}")
+        if defconfig:
+            print(f"{YELLOW}主 defconfig: {defconfig}{RESET}")
+        print(f"{YELLOW}BstylencPlan: {json.dumps(asdict(plan), ensure_ascii=False)}{RESET}")
+        if logger.enabled:
+            logger.line(f"start: {datetime.now().isoformat(timespec='seconds')}")
+            logger.line(f"BstylencPlan: {json.dumps(asdict(plan), ensure_ascii=False)}")
+        if plan.dry_run:
+            print(f"{YELLOW}dry-run 命令: {command}{RESET}")
+            if logger.enabled:
+                logger.line(f"dry-run 命令: {command}")
+        else:
+            run_cmd(command, logger)
+        success = True
+    finally:
+        if logger.enabled:
+            status = "finish" if success else "failed"
+            logger.line(f"{status}: {datetime.now().isoformat(timespec='seconds')}")
+            print(f"{GREEN}日志文件: {logger.latest_path}{RESET}")
+            print(f"{GREEN}历史日志: {logger.history_path}{RESET}")
+        logger.close()
+
+
 def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     ensure_python3_default()
     infer_plan_target_from_config(plan, build_dir)
@@ -1192,6 +1504,14 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"bstyle", "bstylenc"}:
+        plan = parse_bstylenc_args(argv[1:])
+        start_dir, project_root, configs_dir, build_dir = locate_project_root(
+            os.getcwd(), workspace=plan.workspace
+        )
+        run_bstylenc_plan(plan, start_dir, project_root, configs_dir, build_dir)
+        return
+
     if any(arg in {"-h", "-H", "--help"} for arg in argv):
         print_help()
         sys.exit(0)
@@ -1210,7 +1530,10 @@ def main(argv=None):
         start_dir, project_root, configs_dir, build_dir = locate_project_root(
             os.getcwd(), workspace=plan.workspace
         )
-    run_build_plan(plan, start_dir, project_root, configs_dir, build_dir)
+    if isinstance(plan, BstylencPlan):
+        run_bstylenc_plan(plan, start_dir, project_root, configs_dir, build_dir)
+    else:
+        run_build_plan(plan, start_dir, project_root, configs_dir, build_dir)
 
 
 if __name__ == "__main__":

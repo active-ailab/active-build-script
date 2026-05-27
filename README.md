@@ -10,6 +10,7 @@
 | 短参完整编译 | 使用 `-f/-p/-m/-j` 指定 family、project、mode 和线程数，同时兼容大写短参别名。 |
 | 当前配置继续编译 | `-c <mode>` 可直接复用已有 `build/.config`，其中 `app` 会按 `fw` 处理；未显式传入 `-v` 时不覆写版本。 |
 | BuildPlan 输入 | `-i <plan-file>` 可直接读取 JSON BuildPlan 执行编译。 |
+| bstyle 编译 | `active-build bstyle` 可独立调用工作区内 `build/cmd/linux32|linux64/bstylenc`，不会串入固件编译流程；`bstylenc` 是兼容别名。 |
 | 工作区定位 | `-w <path>` 支持传入工作区根目录或其 `build/` 目录。 |
 | XML 校验 | 完整编译前会检查 `.repo/manifest.xml` 与 `huamiOS.xml` 或目标项目 XML。 |
 | 版本号覆写 | 显式传入 `-v` 或 BuildPlan 显式配置版本时会触发覆写；main/fw/ota 写 `build/.config`，纯 sensorhub 写 `build/out_hub/.config`。 |
@@ -112,6 +113,14 @@ active-build -i /tmp/active-build-plan.json
 active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 ```
 
+独立编译 `.style`：
+
+```sh
+active-build bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style
+active-build bstyle -f mhs003 -p cologne -i Foo.style -o Foo.bstyle
+active-build bstyle -i Foo.style -w /home/zepp/workspace/mod --dry-run
+```
+
 以下顺序式旧语法已经移除：
 
 ```text
@@ -122,7 +131,7 @@ active-build <family> <project> <mode> [threads]
 
 ## BuildPlan
 
-`active-build -i` 接收一个 JSON 对象，字段如下：
+`active-build -i` 接收一个 JSON 对象。固件构建字段如下：
 
 ```json
 {
@@ -145,7 +154,7 @@ active-build <family> <project> <mode> [threads]
 
 字段说明：
 
-- `action` 当前只支持 `build`。
+- `action` 使用 `build`。
 - `mode` 支持 `fw`、`firmware`、`app`、`ota`、`sensorhub`、`sensorhub-fw`、`sensorhub-firmware`、`sensorhub-ota`、`debug`、`release`、`sim`。
 - `app` 会被规范化为 `firmware`。
 - `debug`、`release` 属于快捷完整编译入口，最终会规范化为 `sensorhub-ota` 流程。
@@ -158,6 +167,35 @@ active-build <family> <project> <mode> [threads]
 - `use_current_config` 为 `true` 时，CLI 会从 `build/.config` 中推断 family 和 project。
 - `workspace` 可指向工作区根目录，也可直接指向 `build/` 目录。
 - `log` 控制是否写入 `build/logs/active-build/`。
+
+`bstylenc` JSON 字段如下：
+
+```json
+{
+  "action": "bstylenc",
+  "family": null,
+  "project": null,
+  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
+  "output": null,
+  "workspace": "/home/zepp/workspace/mod",
+  "width": null,
+  "height": null,
+  "pixel_ratio": null,
+  "dry_run": false,
+  "log": false
+}
+```
+
+规则：
+
+- `action` 使用 `bstylenc` 时只执行 bstyle 编译，不进入 `fw`、`ota`、`sensorhub` 等固件编译流程。
+- `input` 传给底层 `bstylenc -i`；未配置时，参数模式只会在当前目录存在唯一 `.style` 文件时自动推导，否则报错。
+- `output` 传给底层 `bstylenc -o`；为 `null` 或缺失时由 `input.style` 生成同目录同名 `.bstyle`。
+- `width`、`height`、`pixel_ratio` 为 `null` 或缺失时，从 `configs/<family>/<family>_<project>_defconfig` 推导；非 `null` 时使用 JSON 输入值。
+- 推导宽高优先读取 `STORYBOARD_DISPLAY_WIDTH` / `STORYBOARD_DISPLAY_HEIGHT`，缺失时回退到 `AMOLED_PANEL_WIDTH` / `AMOLED_PANEL_HEIGHT`。
+- 推导 `pixel_ratio` 优先读取 `HM_FONT_DENSTIY`，缺失时回退到 `HM_DISPLAY_DENSTIY`。
+- `family`、`project` 可省略；需要读取 defconfig 时，会优先从 `build/.active-build-state.json` 和 `build/.config` 推导，失败则报错。
+- `dry_run` 为 `true` 时只打印最终 `bstylenc` 命令，不执行。
 
 ## 运行状态文件
 

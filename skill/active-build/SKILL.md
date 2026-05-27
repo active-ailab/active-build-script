@@ -11,8 +11,8 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 
 - 必须在目标 Active 工作区或其子目录内运行 `active-build`。
 - 必须以 CLI 为项目校验、manifest 检查、defconfig 处理、sensorhub 产物处理、命令拼接顺序的唯一事实来源。
-- agent 发起编译时，优先使用 BuildPlan JSON + `active-build -i <plan-file>`。
-- 编译前必须先向用户展示 BuildPlan，并等待用户确认。
+- agent 发起固件构建或 bstyle 编译时，优先使用 BuildPlan JSON + `active-build -i <plan-file>`。
+- 执行前必须先向用户展示 BuildPlan，并等待用户确认。
 - 执行前必须给出将要运行的终端命令。
 - 执行编译前必须先判断当前环境是否具备完全访问权限；若不是完全访问权限，不得直接发起编译。
 - 若当前不是完全访问权限，必须提前告知用户切换权限后再执行，并明确说明在当前权限下继续编译可能失败、可能被沙箱拦截、也可能导致结果不完整或误判。
@@ -20,7 +20,7 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 - 若构建失败或中断，必须返回命令、工作目录、退出码，以及关键错误内容。
 - 若 CLI 在输出中打印了 `>>> 执行:` 的实际命令，需要保留这些命令，便于用户手动复现。
 - 成功或失败后，可通过本地 Lark MCP 发送通知；通知内容只允许简述构建计划与结果，不要发送文件路径、日志路径或大段输出。
-- 多个 BuildPlan 需要先整体确认，再按顺序串行执行。
+- 多个 BuildPlan，包括 `action=build` 和 `action=bstylenc` 的混合队列，需要先整体确认，再按顺序串行执行。
 
 ## 静默执行模式
 
@@ -72,7 +72,9 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 
 ## BuildPlan 优先工作流
 
-用户要求 agent 发起编译时，按下面流程执行：
+用户要求 agent 发起固件构建或 bstyle 编译时，优先生成 BuildPlan JSON 并通过 `active-build -i <plan-file>` 执行，不优先使用短参直接执行。
+
+固件构建按下面流程执行：
 
 1. 解析目标工作区根目录。必须包含 `configs/` 与 `build/`；若用户当前在子目录中，需要向上定位。
 2. 若当前工作区已有编译信息，先按“已有编译信息优先流程”处理。
@@ -87,6 +89,22 @@ active-build -i <plan-file>
 ```
 
 若 BuildPlan 中没有绝对路径 `workspace`，则应在目标工作区内执行；若从其他目录执行，则追加 `-w <workspace>`。
+8. 命令启动后，按“静默执行模式”等待命令结束；仅在命令结束或终止后统一回溯结果。
+
+bstyle 编译按下面流程执行：
+
+1. 解析目标工作区根目录。必须包含 `configs/` 与 `build/`；若用户当前在子目录中，需要向上定位。
+2. 收集或推断 `family`、`project`、`input`、`output`、`width`、`height`、`pixel_ratio`。
+3. 优先生成 `action: "bstylenc"` 的 BuildPlan JSON；不要优先使用 `active-build bstyle ...` 短参直接执行。
+4. 将 BuildPlan 展示给用户确认。若 `output` 未指定，应说明会由 `input.style` 自动生成同目录同名 `.bstyle`。
+5. 在执行前检查当前是否具备完全访问权限；若不具备，先停止执行并告知用户切换权限及风险。
+6. 确认且权限满足后执行：
+
+```sh
+active-build -i <plan-file>
+```
+
+7. 参数或 JSON 模式不进入交互；推导失败、文件不存在、候选不唯一时让 CLI 直接报错，不要在 agent 侧绕过 CLI 重写推导。
 8. 命令启动后，按“静默执行模式”等待命令结束；仅在命令结束或终止后统一回溯结果。
 
 ## BuildPlan 字段
@@ -114,7 +132,7 @@ CLI 接收的 BuildPlan 字段如下：
 
 规则：
 
-- `action` 必须是 `build`。
+- `action` 为 `build` 时执行固件构建。
 - `mode` 支持 `fw`、`firmware`、`app`、`ota`、`sensorhub`、`sensorhub-fw`、`sensorhub-firmware`、`sensorhub-ota`、`debug`、`release`、`sim`。
 - `app` 会被 CLI 规范化为 `firmware`。
 - `build_type` 支持 `debug`、`inspect`、`release_log`、`release`。
@@ -127,6 +145,46 @@ CLI 接收的 BuildPlan 字段如下：
 - `use_current_config` 为 `true` 时，可省略 `family` 和 `project`，由 CLI 从 `build/.config` 推断。
 - `workspace` 可以是工作区根目录，也可以是其 `build/` 目录。
 - `log` 控制是否写入 `build/logs/active-build/`。
+
+`bstylenc` 是独立 action，不会串入任何固件编译流程。JSON 字段如下：
+
+```json
+{
+  "action": "bstylenc",
+  "family": null,
+  "project": null,
+  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
+  "output": null,
+  "workspace": "/home/zepp/workspace/mod",
+  "width": null,
+  "height": null,
+  "pixel_ratio": null,
+  "dry_run": false,
+  "log": false
+}
+```
+
+规则：
+
+- 参数或 JSON 模式不进入交互；推导失败、文件不存在、候选不唯一时直接报错。
+- `input` 传给底层 `bstylenc -i`；未配置时，仅当前目录存在唯一 `.style` 文件才自动推导。
+- `output` 传给底层 `bstylenc -o`；为空时由 `input.style` 生成同目录同名 `.bstyle`。
+- `width`、`height`、`pixel_ratio` 为 `null` 或缺失时，从 `configs/<family>/<family>_<project>_defconfig` 推导；非 `null` 时使用输入值。
+- 推导宽高优先读 `STORYBOARD_DISPLAY_WIDTH` / `STORYBOARD_DISPLAY_HEIGHT`，缺失时回退到 `AMOLED_PANEL_WIDTH` / `AMOLED_PANEL_HEIGHT`。
+- 推导 `pixel_ratio` 优先读 `HM_FONT_DENSTIY`，缺失时回退到 `HM_DISPLAY_DENSTIY`。
+- `family`、`project` 可省略；需要读取 defconfig 时，优先从 `build/.active-build-state.json` 和 `build/.config` 推导，失败则报错。
+- 底层工具只从 workspace 下 `build/cmd/linux64/bstylenc` 或 `build/cmd/linux32/bstylenc` 推导。
+- `dry_run=true` 只打印最终命令，不执行。
+
+命令行独立入口：
+
+```sh
+active-build bstyle [-i input.style] [-o output.bstyle] [-f family] [-p project] [-w workspace] [--dry-run]
+```
+
+`active-build bstylenc` 是兼容别名，文档和人工使用场景优先展示 `active-build bstyle`。
+
+无参数 `active-build` 的交互流程中，先选择 family 和 project，再在构建入口里选择 `bstyle 编译`；进入该分支后只要求输入 `.style`，随后自动生成 `.bstyle` 输出路径，并询问是否修改。
 
 版本覆写位置与触发规则：
 
@@ -231,6 +289,7 @@ active-build -f <family> -p <project> -m <mode> -j <threads>
 active-build -c <mode> -j <threads>
 active-build -i <plan-file>
 active-build -i <plan-file> -w <workspace>
+active-build bstyle -i <style-file> --dry-run
 ```
 
 已移除的旧命令形式：
@@ -253,4 +312,4 @@ Key output:
 ...
 ```
 
-如果是队列中的某个 BuildPlan 失败，需要立刻报告该失败。只有在失败不会影响后续任务，或者用户已明确要求继续整个队列时，才继续执行后续 BuildPlan。
+如果是队列中的某个 BuildPlan 失败，需要立刻报告该失败。只有在失败不会影响后续任务，或者用户已明确要求继续整个队列时，才继续执行后续 BuildPlan。队列中可以混合 `action=build` 和 `action=bstylenc`，仍然按确认后的顺序串行执行。

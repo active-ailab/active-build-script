@@ -22,7 +22,14 @@ def make_workspace(root: Path) -> None:
         parents=True
     )
     (root / "configs" / "mhs003" / "mhs003_cologne_defconfig").write_text(
-        "# main\n", encoding="utf-8"
+        "# main\n"
+        "AMOLED_PANEL_WIDTH=390\n"
+        "AMOLED_PANEL_HEIGHT=450\n"
+        "STORYBOARD_DISPLAY_WIDTH=466\n"
+        "STORYBOARD_DISPLAY_HEIGHT=466\n"
+        'HM_DISPLAY_DENSTIY="0.9708"\n'
+        'HM_FONT_DENSTIY="1.09"\n',
+        encoding="utf-8",
     )
     (root / "configs" / "mhs003" / "mhs003_cologne_sensorhub_defconfig").write_text(
         "# sensorhub\n", encoding="utf-8"
@@ -31,7 +38,13 @@ def make_workspace(root: Path) -> None:
         "# derived\n", encoding="utf-8"
     )
     (root / "configs" / "mhs003s" / "mhs003s_atlas_defconfig").write_text(
-        "# main\n", encoding="utf-8"
+        "# main\n"
+        "AMOLED_PANEL_WIDTH=480\n"
+        "AMOLED_PANEL_HEIGHT=480\n"
+        "STORYBOARD_DISPLAY_WIDTH=480\n"
+        "STORYBOARD_DISPLAY_HEIGHT=480\n"
+        'HM_FONT_DENSTIY="1"\n',
+        encoding="utf-8",
     )
     (root / "configs" / "mhs003s" / "mhs003s_atlas_sensorhub_defconfig").write_text(
         "# sensorhub\n", encoding="utf-8"
@@ -200,6 +213,134 @@ class ActiveBuildCliTest(unittest.TestCase):
                     ["-i", str(plan_path), "-f", "mhs003"],
                     cwd=str(root),
                 )
+
+    def test_bstylenc_args_and_json_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            style = root / "ui" / "Sports" / "prototype" / "style" / "466x466-mdpi" / "Foo.style"
+            style.parent.mkdir(parents=True)
+            style.write_text("<style />\n", encoding="utf-8")
+
+            plan = cli.parse_bstylenc_args(
+                ["-f", "mhs003", "-p", "cologne", "-i", str(style), "--dry-run"]
+            )
+            self.assertEqual(plan.action, "bstylenc")
+            self.assertEqual(plan.family, "mhs003")
+            self.assertEqual(plan.project, "cologne")
+            self.assertEqual(plan.input, str(style))
+            self.assertTrue(plan.dry_run)
+
+            plan_path = root / "bstylenc-plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "action": "bstylenc",
+                        "input": str(style),
+                        "width": 320,
+                        "height": 380,
+                        "pixel_ratio": "1.0",
+                        "dry_run": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan = cli.plan_from_json(str(plan_path), str(root))
+            self.assertEqual(plan.width, "320")
+            self.assertEqual(plan.height, "380")
+            self.assertEqual(plan.pixel_ratio, "1.0")
+
+    def test_main_accepts_bstyle_and_bstylenc_subcommands(self):
+        for subcommand in ("bstyle", "bstylenc"):
+            with self.subTest(subcommand=subcommand), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_workspace(root)
+                style = root / "Foo.style"
+                style.write_text("<style />\n", encoding="utf-8")
+                tool = root / "build" / "cmd" / "linux64" / "bstylenc"
+                tool.parent.mkdir(parents=True)
+                tool.write_text("#!/bin/sh\n", encoding="utf-8")
+
+                with mock.patch.object(cli.platform, "architecture", return_value=("64bit", "")):
+                    cli.main(
+                        [
+                            subcommand,
+                            "-w",
+                            str(root),
+                            "-f",
+                            "mhs003",
+                            "-p",
+                            "cologne",
+                            "-i",
+                            str(style),
+                            "--dry-run",
+                        ]
+                    )
+
+    def test_run_bstylenc_plan_infers_context_and_default_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            style = root / "Foo.style"
+            style.write_text("<style />\n", encoding="utf-8")
+            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
+            tool.parent.mkdir(parents=True)
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            (root / "build" / cli.STATE_FILE).write_text(
+                json.dumps({"family": "mhs003", "project": "cologne"}),
+                encoding="utf-8",
+            )
+            plan = cli.BstylencPlan(input=str(style), dry_run=True)
+
+            with mock.patch.object(cli.platform, "architecture", return_value=("64bit", "")):
+                cli.run_bstylenc_plan(
+                    cli.normalize_bstylenc_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(root / "build"),
+                )
+
+            self.assertEqual(plan.family, "mhs003")
+            self.assertEqual(plan.project, "cologne")
+            self.assertEqual(plan.output, str(root / "Foo.bstyle"))
+            self.assertEqual(plan.width, "466")
+            self.assertEqual(plan.height, "466")
+            self.assertEqual(plan.pixel_ratio, "1.09")
+
+    def test_run_bstylenc_plan_uses_json_dimensions_without_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            style = root / "Foo.style"
+            style.write_text("<style />\n", encoding="utf-8")
+            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
+            tool.parent.mkdir(parents=True)
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            plan = cli.BstylencPlan(
+                input=str(style),
+                width="320",
+                height="380",
+                pixel_ratio="1.0",
+                dry_run=True,
+            )
+
+            with mock.patch.object(cli.platform, "architecture", return_value=("64bit", "")):
+                cli.run_bstylenc_plan(
+                    cli.normalize_bstylenc_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(root / "build"),
+                )
+
+            self.assertIsNone(plan.family)
+            self.assertIsNone(plan.project)
+            self.assertEqual(plan.output, str(root / "Foo.bstyle"))
+            self.assertEqual(
+                cli.make_bstylenc_cmd(str(tool), plan),
+                f"{tool} -i {style} -o {root / 'Foo.bstyle'} -w 320 -h 380 -p 1.0",
+            )
 
     def test_list_projects_filters_derived_configs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -597,6 +738,17 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.main_build_type, "debug")
             self.assertEqual(plan.sensorhub_build_type, "release")
             self.assertTrue(plan.log)
+
+            style = root / "Foo.style"
+            style.write_text("<style />\n", encoding="utf-8")
+            bstyle_inputs = iter(["1", "1", "3", str(style), "n"])
+            with mock.patch("builtins.input", side_effect=lambda _: next(bstyle_inputs)):
+                plan = cli.collect_interactive_plan(str(root), str(root / "configs"))
+            self.assertIsInstance(plan, cli.BstylencPlan)
+            self.assertEqual(plan.family, "mhs003")
+            self.assertEqual(plan.project, "cologne")
+            self.assertEqual(plan.input, str(style))
+            self.assertEqual(plan.output, str(root / "Foo.bstyle"))
 
 
 if __name__ == "__main__":

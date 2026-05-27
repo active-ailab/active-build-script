@@ -12,7 +12,7 @@ active-build --help
 
 ## agent 优先执行方式
 
-agent 发起编译时，优先使用 BuildPlan：
+agent 发起固件构建或 bstyle 编译时，优先使用 BuildPlan JSON + `active-build -i <plan-file>`。短参形式主要用于用户手动执行、调试或 dry-run 验证，不作为 agent 默认执行方式。
 
 ```sh
 active-build -i /tmp/active-build-plan.json
@@ -22,7 +22,7 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 执行前必须先展示并确认 BuildPlan。
 执行前必须先确认当前是否具备完全访问权限；若权限不足，先停止执行并告知用户切换权限以及当前权限下的失败风险。
 
-示例 BuildPlan：
+示例固件 BuildPlan：
 
 ```json
 {
@@ -43,6 +43,24 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 }
 ```
 
+示例 bstyle BuildPlan：
+
+```json
+{
+  "action": "bstylenc",
+  "family": "mhs003",
+  "project": "cologne",
+  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
+  "output": null,
+  "workspace": "/home/zepp/workspace/mod",
+  "width": null,
+  "height": null,
+  "pixel_ratio": null,
+  "dry_run": false,
+  "log": false
+}
+```
+
 ## 交互式完整编译
 
 仅在终端交互可接受时使用：
@@ -52,6 +70,61 @@ active-build
 ```
 
 交互式流程会选择 family、project、构建入口、mode、可选 BUILD_TYPE、日志开关与线程数。
+其中 `bstyle 编译` 分支会在 family 和 project 已选择后，只要求输入 `.style` 路径，再自动生成默认 `.bstyle` 输出路径并询问是否修改。
+
+## 独立 bstyle 编译
+
+`bstyle` 是独立指令，不会串入任何固件编译流程。agent 默认应生成上面的 `action: "bstylenc"` JSON 并执行 `active-build -i <plan-file>`；下面短参形式主要用于用户手动执行、调试或 dry-run 验证：
+
+```sh
+active-build bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style
+active-build bstyle -f mhs003 -p cologne -i Foo.style -o Foo.bstyle
+active-build bstyle -i Foo.style -w /home/zepp/workspace/mod --dry-run
+```
+
+`active-build bstylenc` 是兼容别名，文档和人工使用场景优先展示 `active-build bstyle`。
+
+参数或 JSON 模式不进入交互；推导失败、文件不存在或候选不唯一时直接报错。
+
+底层工具从 workspace 推导：
+
+```text
+build/cmd/linux64/bstylenc
+build/cmd/linux32/bstylenc
+```
+
+宽高和 ppi ratio 从主 defconfig 推导：
+
+```text
+configs/<family>/<family>_<project>_defconfig
+```
+
+优先读取 `STORYBOARD_DISPLAY_WIDTH`、`STORYBOARD_DISPLAY_HEIGHT`、`HM_FONT_DENSTIY`；缺失时分别回退到 `AMOLED_PANEL_WIDTH`、`AMOLED_PANEL_HEIGHT`、`HM_DISPLAY_DENSTIY`。
+
+JSON 字段：
+
+```json
+{
+  "action": "bstylenc",
+  "family": null,
+  "project": null,
+  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
+  "output": null,
+  "workspace": "/home/zepp/workspace/mod",
+  "width": null,
+  "height": null,
+  "pixel_ratio": null,
+  "dry_run": false,
+  "log": false
+}
+```
+
+执行方式：
+
+```sh
+active-build -i /tmp/active-build-bstyle-plan.json
+active-build -i /tmp/active-build-bstyle-plan.json -w /home/zepp/workspace/mod
+```
 
 ## 完整编译
 
@@ -118,11 +191,11 @@ active-build -c sensorhub-ota -u release -j 8
 
 ## BuildPlan 队列
 
-CLI 一次只执行一个 BuildPlan。若需要串行多个构建计划，先整体确认，再顺序执行：
+CLI 一次只执行一个 BuildPlan。若需要串行多个构建计划或 bstyle 计划，先整体展示所有 BuildPlan 并确认，再顺序执行。队列中可以混合 `action=build` 和 `action=bstylenc`：
 
 ```sh
 active-build -i /tmp/active-build-plan-1.json
-active-build -i /tmp/active-build-plan-2.json
+active-build -i /tmp/active-build-bstyle-plan-2.json
 active-build -i /tmp/active-build-plan-3.json
 ```
 
