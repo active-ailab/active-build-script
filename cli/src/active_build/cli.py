@@ -1107,15 +1107,38 @@ def infer_single_style_input(start_dir):
     fail("未指定 -i，且当前目录没有可自动推导的 .style 文件")
 
 
-def resolve_bstylenc_input_output(plan, start_dir):
+def resolve_workspace_path(path, project_root):
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    return os.path.abspath(os.path.join(project_root, path))
+
+
+def ensure_path_under_workspace(path, project_root, label):
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(project_root)
+    try:
+        in_workspace = os.path.commonpath([real_path, real_root]) == real_root
+    except ValueError:
+        in_workspace = False
+    if not in_workspace:
+        fail(f"{label}必须位于当前 workspace 内: {path}")
+
+
+def resolve_bstylenc_input_output(plan, start_dir, project_root):
     if not plan.input:
         plan.input = infer_single_style_input(start_dir)
+    else:
+        plan.input = resolve_workspace_path(plan.input, project_root)
     if not plan.input.endswith(".style"):
         fail(f"输入文件必须是 .style: {plan.input}")
+    ensure_path_under_workspace(plan.input, project_root, "style 输入文件")
     if not os.path.isfile(plan.input):
         fail(f"style 输入文件不存在: {plan.input}")
     if not plan.output:
         plan.output = default_bstyle_output(plan.input)
+    else:
+        plan.output = resolve_workspace_path(plan.output, project_root)
+    ensure_path_under_workspace(plan.output, project_root, "bstyle 输出文件")
 
 
 def parse_bstylenc_params_from_defconfig(defconfig_path, plan):
@@ -1366,7 +1389,7 @@ def build_sensorhub(build_dir, plan, main_defconfig, sensorhub_defconfig, sensor
 
 def run_bstylenc_plan(plan, start_dir, project_root, configs_dir, build_dir):
     plan = normalize_bstylenc_plan(plan)
-    resolve_bstylenc_input_output(plan, start_dir)
+    resolve_bstylenc_input_output(plan, start_dir, project_root)
     needs_defconfig = plan.width is None or plan.height is None or plan.pixel_ratio is None
     defconfig = None
     if needs_defconfig:

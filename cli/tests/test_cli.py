@@ -308,6 +308,63 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.height, "466")
             self.assertEqual(plan.pixel_ratio, "1.09")
 
+    def test_run_bstylenc_plan_resolves_relative_paths_from_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            style = root / "ui" / "Sports" / "prototype" / "style" / "466x466-mdpi" / "Foo.style"
+            style.parent.mkdir(parents=True)
+            style.write_text("<style />\n", encoding="utf-8")
+            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
+            tool.parent.mkdir(parents=True)
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            plan = cli.BstylencPlan(
+                input="ui/Sports/prototype/style/466x466-mdpi/Foo.style",
+                width="466",
+                height="466",
+                pixel_ratio="1.0",
+                dry_run=True,
+            )
+
+            with mock.patch.object(cli.platform, "architecture", return_value=("64bit", "")):
+                cli.run_bstylenc_plan(
+                    cli.normalize_bstylenc_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(root / "build"),
+                )
+
+            self.assertEqual(plan.input, str(style))
+            self.assertEqual(plan.output, str(style.with_suffix(".bstyle")))
+
+    def test_run_bstylenc_plan_rejects_input_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "mod"
+            other = Path(tmp) / "geneva"
+            root.mkdir()
+            other.mkdir()
+            make_workspace(root)
+            make_workspace(other)
+            style = other / "ui" / "Sports" / "prototype" / "style" / "466x466-mdpi" / "Foo.style"
+            style.parent.mkdir(parents=True)
+            style.write_text("<style />\n", encoding="utf-8")
+            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
+            tool.parent.mkdir(parents=True)
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            plan = cli.BstylencPlan(input=str(style), dry_run=True)
+
+            with self.assertRaises(SystemExit):
+                cli.run_bstylenc_plan(
+                    cli.normalize_bstylenc_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(root / "build"),
+                )
+
     def test_run_bstylenc_plan_uses_json_dimensions_without_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
