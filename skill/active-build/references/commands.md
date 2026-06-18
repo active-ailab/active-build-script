@@ -32,7 +32,7 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
   "mode": "sensorhub-ota",
   "threads": "8",
   "reload_defconfig": false,
-  "version": "10.0.0",
+  "version": null,
   "version_explicit": false,
   "build_type": null,
   "main_build_type": null,
@@ -133,7 +133,7 @@ active-build -i /tmp/active-build-bstyle-plan.json -w /home/zepp/workspace/mod
 ```sh
 active-build -f mhs003 -p cologne -m debug -j 8
 active-build -f mhs003s -p atlas -m sensorhub-ota -j 8 -b release
-active-build -F mhs003s -P atlas -M sensorhub -J 8 -D -V 10.0.0
+active-build -F mhs003s -P atlas -M sensorhub -J 8 -D -V 6.1.23.4
 ```
 
 支持的 mode：
@@ -154,16 +154,17 @@ debug, inspect, release_log, release
 - `debug`、`release` 是快捷完整编译入口，CLI 内部会规范化为实际构建流程。
 - 对用户展示和最终确认 BuildPlan 时，不应把 `debug` 或 `release` 当作最终 `mode` 配置，应直接使用 `sensorhub-ota` 等实际模式。
 - `-b/-a/-u` 都会保留在 BuildPlan 语义中，但实际拼接 `make` 命令时，只有 `release` 会写入 `BUILD_TYPE=release`；`debug`、`inspect`、`release_log` 不会写入运行命令。
-- `-v/-V` 表示显式版本覆写；未传入时，默认版本值不会自动强制覆写当前配置。
+- `-v/-V` 继续映射到 BuildPlan 的 `version` 字段。旧工程中它表示显式 `.config` 版本覆写；新工程中它表示 OTA 阶段的 `BUILD_FW_VER`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本。
 
 完整编译过程中，CLI 可能会：
 
 - 检查 `.repo/manifest.xml`
 - 在需要时询问是否继续
 - 在 `reload_defconfig=true` 时执行 `distclean` 与 `clean`
-- main/fw/ota 阶段覆写 `build/.config` 中的 `BOARD_FIRMWARE_VERSION`，随后执行 `make silentoldconfig`
-- 纯 `sensorhub` 模式显式带 `-v` 时覆写 `build/out_hub/.config`，随后执行 `make silentoldconfig APPDIR=out_hub`
-- `sensorhub-fw`、`sensorhub-ota` 组合模式下跳过 sensorhub 的 `out_hub` 版本覆写，只在后续 main/fw/ota 阶段覆写一次 `build/.config`
+- 旧工程（未检测到 `build/build_rules/fw_version.mk`）按原逻辑覆写 `BOARD_FIRMWARE_VERSION` 并执行对应 `silentoldconfig`
+- 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config`，只在 `make ota` 阶段下发版本变量
+- 新工程默认 `99.9` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
+- 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量
 - 在 `build/out_hub/` 下构建 sensorhub
 - 回拷 sensorhub 产物到产品目录
 - 执行 firmware 或 ota 阶段
@@ -176,7 +177,8 @@ debug, inspect, release_log, release
 active-build -c app -j 8
 active-build -c fw -j 8
 active-build -c fw -v 10.0.0 -j 8
-active-build -c ota -j 8
+active-build -c ota -v 23.4 -j 8
+active-build -c ota -v 6.1.23.4 -j 8
 active-build -c sensorhub -j 8
 active-build -c sensorhub-ota -u release -j 8
 ```
@@ -186,7 +188,7 @@ active-build -c sensorhub-ota -u release -j 8
 - `app` 会被规范化为 firmware / fw。
 - 当前配置模式下，CLI 会从 `build/.config` 中推断 family 与 project。
 - 若工作区已有上次编译信息且用户确认延用，BuildPlan 中应使用 `reload_defconfig=false`。
-- 当前配置模式默认跳过版本号覆写；显式传入 `-v/-V` 或 BuildPlan 中设置 `version_explicit=true` 时，仍会按对应阶段覆写一次。
+- 当前配置模式下，旧工程默认跳过版本号覆写；显式传入 `-v/-V` 或 BuildPlan 中设置 `version_explicit=true` 时仍会按旧规则覆写一次。新工程的默认或显式版本只影响 `make ota` 阶段参数。
 - 未显式传入 `-j` 时，CLI 优先复用 `build/.active-build-state.json` 中的 `threads`；旧 `.hmbuild_last_threads` 只作为迁移兼容读取，成功写入新状态后会被清理。
 
 ## BuildPlan 队列

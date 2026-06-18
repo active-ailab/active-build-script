@@ -22,6 +22,7 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 DEFAULT_VERSION = "10.0.0"
+DEFAULT_BUILD_FW_VER = "99.9"
 LEGACY_LAST_THREADS_FILE = ".hmbuild_last_threads"
 STATE_FILE = ".active-build-state.json"
 SENSORHUB_APPDIR = "out_hub"
@@ -54,7 +55,7 @@ HELP_TEXT = """\
 
 高级参数:
   -d                重新加载 defconfig
-  -v <version>      临时覆写 BOARD_FIRMWARE_VERSION，默认 10.0.0
+  -v <version>      旧工程覆写 BOARD_FIRMWARE_VERSION；新工程传 BUILD_FW_VER，默认 99.9
   -w <path>         指定 workspace 根目录或 build 目录
   -i <file>         从 BuildPlan JSON 文件读取构建计划
   -b <type>         全局 BUILD_TYPE，未单独指定时 main 和 sensorhub 共用
@@ -346,6 +347,43 @@ def validate_version(version):
     return str(version)
 
 
+def supports_build_fw_ver(project_root):
+    if not project_root:
+        return False
+    return os.path.exists(
+        os.path.join(project_root, "build", "build_rules", "fw_version.mk")
+    )
+
+
+def default_version_for_project(project_root):
+    if supports_build_fw_ver(project_root):
+        return DEFAULT_BUILD_FW_VER
+    return DEFAULT_VERSION
+
+
+def validate_build_fw_ver(version):
+    value = validate_version(version)
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+\.[0-9]+)?", value):
+        fail(f"新版本规则下版本号必须是两段 c.d 或四段 a.b.c.d 数字版本: {version}")
+    return value
+
+
+def configure_plan_version(project_root, plan):
+    use_build_fw_ver = supports_build_fw_ver(project_root)
+    setattr(plan, "_use_build_fw_ver", use_build_fw_ver)
+    if use_build_fw_ver:
+        if not plan.version_explicit:
+            plan.version = DEFAULT_BUILD_FW_VER
+        plan.version = validate_build_fw_ver(plan.version)
+    else:
+        plan.version = validate_version(plan.version or DEFAULT_VERSION)
+    return plan
+
+
+def plan_uses_build_fw_ver(plan):
+    return bool(getattr(plan, "_use_build_fw_ver", False))
+
+
 def normalize_bool(value):
     if isinstance(value, bool):
         return value
@@ -518,6 +556,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
     cwd = os.path.abspath(cwd or os.getcwd())
     project_root = project_root or cwd
     default_threads = load_last_threads(project_root) or str(multiprocessing.cpu_count() * 2)
+    default_version = default_version_for_project(project_root)
 
     if len(argv) == 0:
         if configs_dir is None:
@@ -561,12 +600,18 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
             plan.workspace = workspace
         return plan
 
+    if args.version is not None:
+        if supports_build_fw_ver(project_root):
+            validate_build_fw_ver(args.version)
+        else:
+            validate_version(args.version)
+
     if args.current_mode:
         plan = BuildPlan(
             mode=args.current_mode,
             threads=args.threads or default_threads,
             reload_defconfig=args.reload_defconfig,
-            version=args.version or DEFAULT_VERSION,
+            version=args.version or default_version,
             version_explicit=args.version is not None,
             build_type=args.build_type,
             main_build_type=args.main_build_type,
@@ -586,7 +631,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
         mode=args.mode,
         threads=args.threads or default_threads,
         reload_defconfig=True if args.mode and args.mode.lower() in {"debug", "release", "sim"} else args.reload_defconfig,
-        version=args.version or DEFAULT_VERSION,
+        version=args.version or default_version,
         version_explicit=args.version is not None,
         build_type=args.build_type,
         main_build_type=args.main_build_type,
@@ -852,10 +897,11 @@ def collect_interactive_plan(project_root, configs_dir):
 
     project = prompt_choice(f"请选择 {family} 项目", projects)
     entry = prompt_choice("请选择构建入口", ["快速完整编译", "高级构建", "bstyle 编译"])
+    default_version = default_version_for_project(project_root)
     if entry == "快速完整编译":
         mode = prompt_choice("请选择编译模式", ["release", "debug", "sim"])
         reload_defconfig = True
-        version = DEFAULT_VERSION
+        version = default_version
         version_explicit = False
         build_type = None
         main_build_type = None
@@ -867,9 +913,9 @@ def collect_interactive_plan(project_root, configs_dir):
             ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
         )
         reload_defconfig = prompt_yes_no("是否重新加载 defconfig", False)
-        version = DEFAULT_VERSION
+        version = default_version
         version_explicit = False
-        if not prompt_yes_no("是否使用默认版本 10.0.0", True):
+        if not prompt_yes_no(f"是否使用默认版本 {default_version}", True):
             version = input(f"{YELLOW}请输入版本号: {RESET}").strip()
             version_explicit = True
         build_type = prompt_optional_build_type("请选择全局 BUILD_TYPE")
@@ -1248,6 +1294,18 @@ def command_build_type(plan, stage):
     return None
 
 
+def make_ota_version_args(plan):
+    if not plan_uses_build_fw_ver(plan):
+        return []
+    part_count = len(str(plan.version).split("."))
+    if part_count == 2:
+        return [
+            "FW_VER_STRATEGY=os_global",
+            f"BUILD_FW_VER={shlex.quote(plan.version)}",
+        ]
+    return [f"BUILD_FW_VER={shlex.quote(plan.version)}"]
+
+
 def make_cmd(plan, target=None, stage=None, appdir=None, build_dir_var=None, threads=None):
     parts = ["make"]
     if target:
@@ -1255,6 +1313,8 @@ def make_cmd(plan, target=None, stage=None, appdir=None, build_dir_var=None, thr
     build_type = command_build_type(plan, stage)
     if build_type and target not in {"clean", "distclean"}:
         parts.append(f"BUILD_TYPE={build_type}")
+    if target == "ota":
+        parts.extend(make_ota_version_args(plan))
     if build_dir_var:
         parts.append(f"BUILD_DIR={build_dir_var}")
     if appdir:
@@ -1289,6 +1349,12 @@ def patch_config_version(config_path, version):
 
 
 def apply_version_override(build_dir, plan, logger=None, appdir=None):
+    if plan_uses_build_fw_ver(plan):
+        print(f"{YELLOW}新版本规则使用 BUILD_FW_VER={plan.version}，已跳过 .config 版本覆写{RESET}")
+        if logger:
+            logger.line(f"skip version override: BUILD_FW_VER={plan.version}")
+        return
+
     if plan.use_current_config and not plan.version_explicit:
         print(f"{YELLOW}当前配置编译已跳过 .config 版本覆写{RESET}")
         if logger:
@@ -1428,6 +1494,7 @@ def run_bstylenc_plan(plan, start_dir, project_root, configs_dir, build_dir):
 def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     ensure_python3_default()
     infer_plan_target_from_config(plan, build_dir)
+    configure_plan_version(project_root, plan)
     plan = normalize_plan(plan)
 
     if plan.family not in find_available_families(configs_dir):

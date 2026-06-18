@@ -51,6 +51,12 @@ def make_workspace(root: Path) -> None:
     )
 
 
+def enable_build_fw_ver(root: Path) -> None:
+    rules_dir = root / "build" / "build_rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "fw_version.mk").write_text("# test marker\n", encoding="utf-8")
+
+
 class ActiveBuildCliTest(unittest.TestCase):
     def test_locate_project_root_from_subdir_and_build_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +126,36 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(plan.version, "1.2.3")
             self.assertTrue(plan.version_explicit)
             self.assertTrue(plan.reload_defconfig)
+
+    def test_new_workspace_uses_build_fw_ver_default_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            enable_build_fw_ver(root)
+
+            plan = cli.parse_args_or_prompt(
+                str(root),
+                str(root / "configs"),
+                ["-f", "mhs003", "-p", "cologne", "-m", "ota"],
+            )
+            self.assertEqual(plan.version, "99.9")
+            self.assertFalse(plan.version_explicit)
+
+            for version in ("23.4", "6.1.23.4"):
+                plan = cli.parse_args_or_prompt(
+                    str(root),
+                    str(root / "configs"),
+                    ["-f", "mhs003", "-p", "cologne", "-m", "ota", "-v", version],
+                )
+                self.assertEqual(plan.version, version)
+                self.assertTrue(plan.version_explicit)
+
+            with self.assertRaises(SystemExit):
+                cli.parse_args_or_prompt(
+                    str(root),
+                    str(root / "configs"),
+                    ["-f", "mhs003", "-p", "cologne", "-m", "ota", "-v", "10.0.0"],
+                )
 
     def test_parse_current_build_modes_and_split_types(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,6 +482,25 @@ class ActiveBuildCliTest(unittest.TestCase):
         )
         self.assertEqual(cli.make_cmd(plan, "clean", stage="main"), "make clean")
 
+    def test_make_cmd_derives_ota_version_strategy_from_version_segments(self):
+        two_part = cli.BuildPlan(version="23.4")
+        setattr(two_part, "_use_build_fw_ver", True)
+        self.assertEqual(
+            cli.make_cmd(two_part, "ota", stage="main", threads="8"),
+            "make ota FW_VER_STRATEGY=os_global BUILD_FW_VER=23.4 -j8",
+        )
+        self.assertEqual(
+            cli.make_cmd(two_part, stage="main", threads="8"),
+            "make -j8",
+        )
+
+        four_part = cli.BuildPlan(version="6.1.23.4")
+        setattr(four_part, "_use_build_fw_ver", True)
+        self.assertEqual(
+            cli.make_cmd(four_part, "ota", stage="main", threads="8"),
+            "make ota BUILD_FW_VER=6.1.23.4 -j8",
+        )
+
     def test_project_switch_requires_reload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -691,6 +746,51 @@ class ActiveBuildCliTest(unittest.TestCase):
                 self.assertTrue(cli.compare_repo_manifest(str(root), "cologne"))
 
             confirm.assert_called_once_with(True)
+
+    def test_run_new_workspace_uses_default_build_fw_ver_on_ota_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            enable_build_fw_ver(root)
+            build_dir = root / "build"
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+                if "mhs003_cologne_defconfig" in command:
+                    (build_dir / ".config").write_text(
+                        "HMI_BUILD_BOARD=\"mhs003\"\nHMI_PRODUCT_CUSTOMIZE_DIR=\"cologne\"\n",
+                        encoding="utf-8",
+                    )
+
+            plan = cli.BuildPlan(
+                family="mhs003",
+                project="cologne",
+                mode="ota",
+                threads="8",
+                reload_defconfig=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "compare_repo_manifest", return_value=True
+            ), mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                cli.run_build_plan(
+                    cli.normalize_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(build_dir),
+                )
+
+            self.assertEqual(plan.version, "99.9")
+            self.assertIn("make mhs003_cologne_defconfig", commands)
+            self.assertNotIn("make mhs003_cologne_defconfig BUILD_FW_VER=99.9", commands)
+            self.assertIn("make ota FW_VER_STRATEGY=os_global BUILD_FW_VER=99.9 -j8", commands)
+            self.assertNotIn("make silentoldconfig", commands)
+            self.assertNotIn(
+                "BOARD_FIRMWARE_VERSION",
+                (build_dir / ".config").read_text(encoding="utf-8"),
+            )
 
     def test_run_current_config_firmware_skips_version_override(self):
         with tempfile.TemporaryDirectory() as tmp:
