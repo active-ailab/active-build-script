@@ -142,8 +142,8 @@ CLI 接收的 BuildPlan 字段如下：
 - `reload_defconfig` 在完整重配时通常为 `true`；只有明确延用当前工作区已有编译配置时，才设为 `false`。
 - `version` 是唯一版本输入字段，不新增 `fw_ver_strategy` 等字段。旧工程中它用于覆写 `BOARD_FIRMWARE_VERSION`；新工程中它用于 OTA 阶段的 `BUILD_FW_VER`。
 - `version_explicit` 表示 BuildPlan 是否显式要求版本；BuildPlan JSON 中包含 `version` 但未写 `version_explicit` 时，CLI 会按 `true` 处理。
-- 新工程以 `build/build_rules/fw_version.mk` 为识别条件；未显式传入版本时默认使用 `99.9`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本，三段 `10.0.0` 会被拒绝。
-- 新工程只在 `make ota` 阶段下发版本：默认 `99.9` 或两段版本会追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`；四段版本只追加 `BUILD_FW_VER=<version>`。defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 阶段不追加版本变量。
+- 新工程以 `build/build_rules/fw_version.mk` 为识别条件；未显式传入版本时默认使用 `999.999`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本，三段 `10.0.0` 会被拒绝。
+- 新工程只在 `make ota` 阶段下发版本：默认 `999.999` 或两段版本会追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`；四段版本只追加 `BUILD_FW_VER=<version>`。defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 阶段不追加版本变量。
 - `use_current_config` 为 `true` 时，可省略 `family` 和 `project`，由 CLI 从 `build/.config` 推断。
 - `workspace` 可以是工作区根目录，也可以是其 `build/` 目录。
 - `log` 控制是否写入 `build/logs/active-build/`。
@@ -192,7 +192,7 @@ active-build bstyle [-i input.style] [-o output.bstyle] [-f family] [-p project]
 
 - 旧工程（未检测到 `build/build_rules/fw_version.mk`）保持原来的 `.config` 覆写逻辑：main/fw/ota 写 `build/.config`，纯 `sensorhub` 显式版本写 `build/out_hub/.config`，并执行对应 `silentoldconfig`。
 - 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config` 中的 `BOARD_FIRMWARE_VERSION`。
-- 新工程只在 `make ota` 阶段追加版本变量；默认 `99.9` 或显式两段版本追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只追加 `BUILD_FW_VER=<version>`。
+- 新工程只在 `make ota` 阶段追加版本变量；默认 `999.999` 或显式两段版本追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只追加 `BUILD_FW_VER=<version>`。
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量。
 - `use_current_config=true` 在旧工程中仍默认跳过版本覆写；新工程默认或显式版本只影响 OTA 阶段版本参数。
 

@@ -138,7 +138,7 @@ class ActiveBuildCliTest(unittest.TestCase):
                 str(root / "configs"),
                 ["-f", "mhs003", "-p", "cologne", "-m", "ota"],
             )
-            self.assertEqual(plan.version, "99.9")
+            self.assertEqual(plan.version, "999.999")
             self.assertFalse(plan.version_explicit)
 
             for version in ("23.4", "6.1.23.4"):
@@ -782,10 +782,10 @@ class ActiveBuildCliTest(unittest.TestCase):
                     str(build_dir),
                 )
 
-            self.assertEqual(plan.version, "99.9")
+            self.assertEqual(plan.version, "999.999")
             self.assertIn("make mhs003_cologne_defconfig", commands)
-            self.assertNotIn("make mhs003_cologne_defconfig BUILD_FW_VER=99.9", commands)
-            self.assertIn("make ota FW_VER_STRATEGY=os_global BUILD_FW_VER=99.9 -j8", commands)
+            self.assertNotIn("make mhs003_cologne_defconfig BUILD_FW_VER=999.999", commands)
+            self.assertIn("make ota FW_VER_STRATEGY=os_global BUILD_FW_VER=999.999 -j8", commands)
             self.assertNotIn("make silentoldconfig", commands)
             self.assertNotIn(
                 "BOARD_FIRMWARE_VERSION",

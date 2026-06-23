@@ -163,7 +163,7 @@ debug, inspect, release_log, release
 - 在 `reload_defconfig=true` 时执行 `distclean` 与 `clean`
 - 旧工程（未检测到 `build/build_rules/fw_version.mk`）按原逻辑覆写 `BOARD_FIRMWARE_VERSION` 并执行对应 `silentoldconfig`
 - 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config`，只在 `make ota` 阶段下发版本变量
-- 新工程默认 `99.9` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
+- 新工程默认 `999.999` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量
 - 在 `build/out_hub/` 下构建 sensorhub
 - 回拷 sensorhub 产物到产品目录

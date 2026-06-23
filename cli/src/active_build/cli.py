@@ -22,7 +22,7 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 DEFAULT_VERSION = "10.0.0"
-DEFAULT_BUILD_FW_VER = "99.9"
+DEFAULT_BUILD_FW_VER = "999.999"
 LEGACY_LAST_THREADS_FILE = ".hmbuild_last_threads"
 STATE_FILE = ".active-build-state.json"
 SENSORHUB_APPDIR = "out_hub"
@@ -55,7 +55,7 @@ HELP_TEXT = """\
 
 高级参数:
   -d                重新加载 defconfig
-  -v <version>      旧工程覆写 BOARD_FIRMWARE_VERSION；新工程传 BUILD_FW_VER，默认 99.9
+  -v <version>      旧工程覆写 BOARD_FIRMWARE_VERSION；新工程传 BUILD_FW_VER，默认 999.999
   -w <path>         指定 workspace 根目录或 build 目录
   -i <file>         从 BuildPlan JSON 文件读取构建计划
   -b <type>         全局 BUILD_TYPE，未单独指定时 main 和 sensorhub 共用
