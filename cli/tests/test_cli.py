@@ -747,6 +747,59 @@ class ActiveBuildCliTest(unittest.TestCase):
 
             confirm.assert_called_once_with(True)
 
+    def test_yes_no_confirmations_default_to_yes(self):
+        with mock.patch("builtins.input", return_value=""):
+            self.assertTrue(cli.prompt_yes_no("是否继续"))
+        with mock.patch("builtins.input", return_value=""):
+            self.assertTrue(cli.confirm_manifest_choice(False))
+        with mock.patch("builtins.input", return_value=""):
+            self.assertTrue(cli.confirm_manifest_choice(True))
+
+    def test_interactive_back_reselects_family_and_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+
+            inputs = iter(["1", "0", "2", "1", "1", "1", "4"])
+            with mock.patch("builtins.input", side_effect=lambda _: next(inputs)):
+                plan = cli.collect_interactive_plan(str(root), str(root / "configs"))
+
+        self.assertEqual(plan.family, "mhs003s")
+        self.assertEqual(plan.project, "atlas")
+        self.assertEqual(plan.mode, "sensorhub-ota")
+        self.assertEqual(plan.threads, "4")
+
+    def test_interactive_back_reselects_advanced_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+
+            inputs = iter(
+                [
+                    "1",
+                    "1",
+                    "2",
+                    "1",
+                    "0",
+                    "5",
+                    "",
+                    "",
+                    "1",
+                    "1",
+                    "1",
+                    "",
+                    "4",
+                ]
+            )
+            with mock.patch("builtins.input", side_effect=lambda _: next(inputs)):
+                plan = cli.collect_interactive_plan(str(root), str(root / "configs"))
+
+        self.assertEqual(plan.mode, "sensorhub-ota")
+        self.assertTrue(plan.reload_defconfig)
+        self.assertFalse(plan.version_explicit)
+        self.assertTrue(plan.log)
+        self.assertEqual(plan.threads, "4")
+
     def test_run_new_workspace_uses_default_build_fw_ver_on_ota_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

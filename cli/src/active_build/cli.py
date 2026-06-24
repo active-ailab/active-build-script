@@ -782,59 +782,85 @@ def print_options_horizontal(options):
         print("  " + "".join(item.ljust(entry_width) for item in row).rstrip())
 
 
-def prompt_choice(title, options):
+BACK = object()
+
+
+def is_back(value):
+    return value is BACK
+
+
+def prompt_choice(title, options, allow_back=False):
     if not options:
         fail(f"{title} 没有可选项")
 
     print(f"\n{YELLOW}{title}{RESET}")
+    if allow_back:
+        print("  0. 返回上一级")
     print_options_horizontal(options)
 
     while True:
         try:
-            raw = input(f"{YELLOW}请输入序号: {RESET}").strip()
+            prompt = "请输入序号（输入 0 返回上一级）" if allow_back else "请输入序号"
+            raw = input(f"{YELLOW}{prompt}: {RESET}").strip()
         except KeyboardInterrupt:
             fail("\n用户中断操作")
 
+        if allow_back and raw in {"0", "b", "back"}:
+            return BACK
         if raw.isdigit():
             choice = int(raw)
             if 1 <= choice <= len(options):
                 return options[choice - 1]
-        print(f"{RED}输入无效，请输入 1 到 {len(options)} 之间的序号{RESET}")
+        back_hint = "，或输入 0 返回上一级" if allow_back else ""
+        print(f"{RED}输入无效，请输入 1 到 {len(options)} 之间的序号{back_hint}{RESET}")
 
 
-def prompt_yes_no(prompt, default=False):
+def prompt_yes_no(prompt, default=True, allow_back=False):
     suffix = "Y/n" if default else "y/N"
+    if allow_back:
+        suffix = f"{suffix}, 输入 0 返回上一级"
     while True:
         try:
             raw = input(f"{YELLOW}{prompt} [{suffix}]: {RESET}").strip().lower()
         except KeyboardInterrupt:
             fail("\n用户中断操作")
+        if allow_back and raw in {"0", "b", "back"}:
+            return BACK
         if raw == "":
             return default
         if raw in {"y", "yes"}:
             return True
         if raw in {"n", "no"}:
             return False
-        print(f"{RED}请输入 y/yes 或 n/no{RESET}")
+        back_hint = "，或输入 0 返回上一级" if allow_back else ""
+        print(f"{RED}请输入 y/yes 或 n/no{back_hint}{RESET}")
 
 
-def prompt_threads(default_threads):
+def prompt_threads(default_threads, allow_back=False):
     while True:
         try:
-            raw = input(f"{YELLOW}请输入编译线程数 [默认 {default_threads}]: {RESET}").strip()
+            suffix = f"默认 {default_threads}"
+            if allow_back:
+                suffix = f"{suffix}, 输入 0 返回上一级"
+            raw = input(f"{YELLOW}请输入编译线程数 [{suffix}]: {RESET}").strip()
         except KeyboardInterrupt:
             fail("\n用户中断操作")
 
+        if allow_back and raw in {"0", "b", "back"}:
+            return BACK
         if raw == "":
             return str(default_threads)
         if raw.isdigit() and int(raw) > 0:
             return raw
-        print(f"{RED}线程数必须是正整数{RESET}")
+        back_hint = "，或输入 0 返回上一级" if allow_back else ""
+        print(f"{RED}线程数必须是正整数{back_hint}{RESET}")
 
 
-def prompt_optional_build_type(label):
+def prompt_optional_build_type(label, allow_back=False):
     options = ["默认", "debug", "inspect", "release_log", "release"]
-    choice = prompt_choice(label, options)
+    choice = prompt_choice(label, options, allow_back=allow_back)
+    if is_back(choice):
+        return BACK
     return None if choice == "默认" else choice
 
 
@@ -842,12 +868,15 @@ def default_bstyle_output(input_path):
     return os.path.splitext(input_path)[0] + ".bstyle"
 
 
-def prompt_style_input():
+def prompt_style_input(allow_back=False):
     while True:
         try:
-            raw = input(f"{YELLOW}请输入 style 输入文件路径: {RESET}").strip()
+            suffix = " [输入 0 返回上一级]" if allow_back else ""
+            raw = input(f"{YELLOW}请输入 style 输入文件路径{suffix}: {RESET}").strip()
         except KeyboardInterrupt:
             fail("\n用户中断操作")
+        if allow_back and raw in {"0", "b", "back"}:
+            return BACK
         if not raw:
             print(f"{RED}style 输入文件路径不能为空{RESET}")
             continue
@@ -860,17 +889,64 @@ def prompt_style_input():
         return raw
 
 
-def collect_interactive_bstylenc_plan(project_root, family, project):
-    input_path = prompt_style_input()
-    output_path = default_bstyle_output(input_path)
-    print(f"{YELLOW}输出文件默认: {output_path}{RESET}")
-    if prompt_yes_no("是否修改输出路径", False):
+def prompt_version(allow_back=False):
+    while True:
         try:
-            output_path = input(f"{YELLOW}请输入 bstyle 输出文件路径: {RESET}").strip()
+            suffix = " [输入 0 返回上一级]" if allow_back else ""
+            version = input(f"{YELLOW}请输入版本号{suffix}: {RESET}").strip()
         except KeyboardInterrupt:
             fail("\n用户中断操作")
-        if not output_path:
-            fail("bstyle 输出文件路径不能为空")
+        if allow_back and version in {"0", "b", "back"}:
+            return BACK
+        if version:
+            return version
+        print(f"{RED}版本号不能为空{RESET}")
+
+
+def prompt_output_path(allow_back=False):
+    while True:
+        try:
+            suffix = " [输入 0 返回上一级]" if allow_back else ""
+            output_path = input(f"{YELLOW}请输入 bstyle 输出文件路径{suffix}: {RESET}").strip()
+        except KeyboardInterrupt:
+            fail("\n用户中断操作")
+        if allow_back and output_path in {"0", "b", "back"}:
+            return BACK
+        if output_path:
+            return output_path
+        print(f"{RED}bstyle 输出文件路径不能为空{RESET}")
+
+
+def collect_interactive_bstylenc_plan(project_root, family, project):
+    step = 0
+    input_path = None
+    output_path = None
+    modify_output = None
+
+    while True:
+        if step == 0:
+            input_path = prompt_style_input(allow_back=True)
+            if is_back(input_path):
+                return BACK
+            output_path = default_bstyle_output(input_path)
+            print(f"{YELLOW}输出文件默认: {output_path}{RESET}")
+            step = 1
+            continue
+        if step == 1:
+            modify_output = prompt_yes_no("是否修改输出路径", True, allow_back=True)
+            if is_back(modify_output):
+                step = 0
+                continue
+            if modify_output:
+                step = 2
+                continue
+            break
+        if step == 2:
+            output_path = prompt_output_path(allow_back=True)
+            if is_back(output_path):
+                step = 1
+                continue
+            break
 
     return normalize_bstylenc_plan(
         BstylencPlan(
@@ -883,6 +959,147 @@ def collect_interactive_bstylenc_plan(project_root, family, project):
     )
 
 
+def collect_interactive_quick_plan(family, project, default_version, default_threads):
+    step = 0
+    mode = None
+
+    while True:
+        if step == 0:
+            mode = prompt_choice("请选择编译模式", ["release", "debug", "sim"], allow_back=True)
+            if is_back(mode):
+                return BACK
+            step = 1
+            continue
+        threads = prompt_threads(default_threads, allow_back=True)
+        if is_back(threads):
+            step = 0
+            continue
+        return normalize_plan(
+            BuildPlan(
+                family=family,
+                project=project,
+                mode=mode,
+                threads=threads,
+                reload_defconfig=True,
+                version=default_version,
+                version_explicit=False,
+                build_type=None,
+                main_build_type=None,
+                sensorhub_build_type=None,
+                log=False,
+            )
+        )
+
+
+def collect_interactive_advanced_plan(family, project, default_version, default_threads):
+    step = 0
+    mode = None
+    reload_defconfig = None
+    use_default_version = None
+    version = default_version
+    version_explicit = False
+    build_type = None
+    main_build_type = None
+    sensorhub_build_type = None
+    log = None
+
+    while True:
+        if step == 0:
+            mode = prompt_choice(
+                "请选择高级构建模式",
+                ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
+                allow_back=True,
+            )
+            if is_back(mode):
+                return BACK
+            step = 1
+            continue
+        if step == 1:
+            reload_defconfig = prompt_yes_no("是否重新加载 defconfig", True, allow_back=True)
+            if is_back(reload_defconfig):
+                step = 0
+                continue
+            step = 2
+            continue
+        if step == 2:
+            use_default_version = prompt_yes_no(
+                f"是否使用默认版本 {default_version}",
+                True,
+                allow_back=True,
+            )
+            if is_back(use_default_version):
+                step = 1
+                continue
+            if use_default_version:
+                version = default_version
+                version_explicit = False
+                step = 4
+            else:
+                step = 3
+            continue
+        if step == 3:
+            version = prompt_version(allow_back=True)
+            if is_back(version):
+                step = 2
+                continue
+            version_explicit = True
+            step = 4
+            continue
+        if step == 4:
+            build_type = prompt_optional_build_type("请选择全局 BUILD_TYPE", allow_back=True)
+            if is_back(build_type):
+                step = 2 if use_default_version else 3
+                continue
+            step = 5
+            continue
+        if step == 5:
+            main_build_type = prompt_optional_build_type(
+                "请选择 main/fw/ota 阶段 BUILD_TYPE",
+                allow_back=True,
+            )
+            if is_back(main_build_type):
+                step = 4
+                continue
+            step = 6
+            continue
+        if step == 6:
+            sensorhub_build_type = prompt_optional_build_type(
+                "请选择 sensorhub 阶段 BUILD_TYPE",
+                allow_back=True,
+            )
+            if is_back(sensorhub_build_type):
+                step = 5
+                continue
+            step = 7
+            continue
+        if step == 7:
+            log = prompt_yes_no("是否写入构建日志", True, allow_back=True)
+            if is_back(log):
+                step = 6
+                continue
+            step = 8
+            continue
+        threads = prompt_threads(default_threads, allow_back=True)
+        if is_back(threads):
+            step = 7
+            continue
+        return normalize_plan(
+            BuildPlan(
+                family=family,
+                project=project,
+                mode=mode,
+                threads=threads,
+                reload_defconfig=reload_defconfig,
+                version=version,
+                version_explicit=version_explicit,
+                build_type=build_type,
+                main_build_type=main_build_type,
+                sensorhub_build_type=sensorhub_build_type,
+                log=log,
+            )
+        )
+
+
 def collect_interactive_plan(project_root, configs_dir):
     last_threads = load_last_threads(project_root)
     default_threads = int(last_threads) if last_threads else multiprocessing.cpu_count() * 2
@@ -890,64 +1107,53 @@ def collect_interactive_plan(project_root, configs_dir):
     if not families:
         fail("configs 下未找到可用芯片目录")
 
-    family = prompt_choice("请选择芯片目录", families)
-    projects = list_projects(project_root, configs_dir, family)
-    if not projects:
-        fail(f"{family} 下未找到可编译的 defconfig")
-
-    project = prompt_choice(f"请选择 {family} 项目", projects)
-    entry = prompt_choice("请选择构建入口", ["快速完整编译", "高级构建", "bstyle 编译"])
     default_version = default_version_for_project(project_root)
-    if entry == "快速完整编译":
-        mode = prompt_choice("请选择编译模式", ["release", "debug", "sim"])
-        reload_defconfig = True
-        version = default_version
-        version_explicit = False
-        build_type = None
-        main_build_type = None
-        sensorhub_build_type = None
-        log = False
-    elif entry == "高级构建":
-        mode = prompt_choice(
-            "请选择高级构建模式",
-            ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
-        )
-        reload_defconfig = prompt_yes_no("是否重新加载 defconfig", False)
-        version = default_version
-        version_explicit = False
-        if not prompt_yes_no(f"是否使用默认版本 {default_version}", True):
-            version = input(f"{YELLOW}请输入版本号: {RESET}").strip()
-            version_explicit = True
-        build_type = prompt_optional_build_type("请选择全局 BUILD_TYPE")
-        main_build_type = prompt_optional_build_type("请选择 main/fw/ota 阶段 BUILD_TYPE")
-        sensorhub_build_type = prompt_optional_build_type("请选择 sensorhub 阶段 BUILD_TYPE")
-        log = prompt_yes_no("是否写入构建日志", False)
-    else:
-        return collect_interactive_bstylenc_plan(project_root, family, project)
 
-    threads = prompt_threads(default_threads)
-    return normalize_plan(
-        BuildPlan(
-            family=family,
-            project=project,
-            mode=mode,
-            threads=threads,
-            reload_defconfig=reload_defconfig,
-            version=version,
-            version_explicit=version_explicit,
-            build_type=build_type,
-            main_build_type=main_build_type,
-            sensorhub_build_type=sensorhub_build_type,
-            log=log,
-        )
-    )
+    while True:
+        family = prompt_choice("请选择芯片目录", families)
+        projects = list_projects(project_root, configs_dir, family)
+        if not projects:
+            fail(f"{family} 下未找到可编译的 defconfig")
+
+        while True:
+            project = prompt_choice(f"请选择 {family} 项目", projects, allow_back=True)
+            if is_back(project):
+                break
+
+            while True:
+                entry = prompt_choice(
+                    "请选择构建入口",
+                    ["快速完整编译", "高级构建", "bstyle 编译"],
+                    allow_back=True,
+                )
+                if is_back(entry):
+                    break
+                if entry == "快速完整编译":
+                    plan = collect_interactive_quick_plan(
+                        family,
+                        project,
+                        default_version,
+                        default_threads,
+                    )
+                elif entry == "高级构建":
+                    plan = collect_interactive_advanced_plan(
+                        family,
+                        project,
+                        default_version,
+                        default_threads,
+                    )
+                else:
+                    plan = collect_interactive_bstylenc_plan(project_root, family, project)
+                if is_back(plan):
+                    continue
+                return plan
 
 
 def confirm_manifest_choice(should_switch):
     if should_switch:
-        prompt = "检测到当前 XML 可能需要变更，是否仍继续后续流程? (y/n): "
+        prompt = "检测到当前 XML 可能需要变更，是否仍继续后续流程? (Y/n): "
     else:
-        prompt = "检测到当前 XML 可继续使用，是否继续后续流程? (y/n): "
+        prompt = "检测到当前 XML 可继续使用，是否继续后续流程? (Y/n): "
 
     while True:
         try:
@@ -956,10 +1162,10 @@ def confirm_manifest_choice(should_switch):
             print(f"\n{RED}用户中断操作{RESET}")
             return False
 
-        if choice in {"y", "yes"}:
+        if choice in {"", "y", "yes"}:
             print(f"{GREEN}继续后续流程{RESET}")
             return True
-        if choice in {"n", "no", ""}:
+        if choice in {"n", "no"}:
             print(f"{RED}用户取消后续流程{RESET}")
             return False
         print(f"{RED}请输入 y/yes 或 n/no{RESET}")
