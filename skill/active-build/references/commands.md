@@ -1,6 +1,6 @@
 # active-build 命令参考
 
-`active-build` 是唯一受支持的执行入口。agent 可以生成 BuildPlan，但不能绕过 CLI 自己重写编译逻辑。
+`active-build` 是固件构建入口，`active-bstyle` 是 bstyle 编译入口。agent 不能绕过 CLI 自己重写编译或 bstyle 编译逻辑。
 
 ## 帮助
 
@@ -12,7 +12,7 @@ active-build --help
 
 ## agent 优先执行方式
 
-agent 发起固件构建或 bstyle 编译时，优先使用 BuildPlan JSON + `active-build -i <plan-file>`。短参形式主要用于用户手动执行、调试或 dry-run 验证，不作为 agent 默认执行方式。
+agent 发起固件构建时，优先使用 BuildPlan JSON + `active-build -i <plan-file>`。短参形式主要用于用户手动执行、调试或 dry-run 验证，不作为 agent 默认执行方式。
 
 ```sh
 active-build -i /tmp/active-build-plan.json
@@ -43,24 +43,6 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 }
 ```
 
-示例 bstyle BuildPlan：
-
-```json
-{
-  "action": "bstylenc",
-  "family": "mhs003",
-  "project": "cologne",
-  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
-  "output": null,
-  "workspace": "/home/zepp/workspace/mod",
-  "width": null,
-  "height": null,
-  "pixel_ratio": null,
-  "dry_run": false,
-  "log": false
-}
-```
-
 ## 交互式完整编译
 
 仅在终端交互可接受时使用：
@@ -70,21 +52,20 @@ active-build
 ```
 
 交互式流程会选择 family、project、构建入口、mode、可选 BUILD_TYPE、日志开关与线程数。
-其中 `bstyle 编译` 分支会在 family 和 project 已选择后，只要求输入 `.style` 路径，再自动生成默认 `.bstyle` 输出路径并询问是否修改。
 
 ## 独立 bstyle 编译
 
-`bstyle` 是独立指令，不会串入任何固件编译流程。agent 默认应生成上面的 `action: "bstylenc"` JSON 并执行 `active-build -i <plan-file>`；下面短参形式主要用于用户手动执行、调试或 dry-run 验证：
+`active-bstyle` 是独立指令，不会串入任何固件编译流程：
 
 ```sh
-active-build bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style
-active-build bstyle -f mhs003 -p cologne -i Foo.style -o Foo.bstyle
-active-build bstyle -i Foo.style -w /home/zepp/workspace/mod --dry-run
+active-bstyle
+active-bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style
+active-bstyle -f mhs003 -p cologne -i Foo.style -o Foo.bstyle
+active-bstyle -i Foo.style -w /home/zepp/workspace/mod --dry-run
+active-bstyle -i Foo.style --width 466 --height 466 --pixel-ratio 1.0 --dry-run
 ```
 
-`active-build bstylenc` 是兼容别名，文档和人工使用场景优先展示 `active-build bstyle`。
-
-参数或 JSON 模式不进入交互；推导失败、文件不存在或候选不唯一时直接报错。
+无参数模式进入 CLI 自带交互；参数模式不进入交互。推导失败、文件不存在或候选不唯一时直接报错。
 
 底层工具从 workspace 推导：
 
@@ -100,31 +81,6 @@ configs/<family>/<family>_<project>_defconfig
 ```
 
 优先读取 `STORYBOARD_DISPLAY_WIDTH`、`STORYBOARD_DISPLAY_HEIGHT`、`HM_FONT_DENSTIY`；缺失时分别回退到 `AMOLED_PANEL_WIDTH`、`AMOLED_PANEL_HEIGHT`、`HM_DISPLAY_DENSTIY`。
-
-JSON 字段：
-
-```json
-{
-  "action": "bstylenc",
-  "family": null,
-  "project": null,
-  "input": "ui/Sports/prototype/style/466x466-mdpi/Foo.style",
-  "output": null,
-  "workspace": "/home/zepp/workspace/mod",
-  "width": null,
-  "height": null,
-  "pixel_ratio": null,
-  "dry_run": false,
-  "log": false
-}
-```
-
-执行方式：
-
-```sh
-active-build -i /tmp/active-build-bstyle-plan.json
-active-build -i /tmp/active-build-bstyle-plan.json -w /home/zepp/workspace/mod
-```
 
 ## 完整编译
 
@@ -166,7 +122,7 @@ debug, inspect, release_log, release
 - 新工程默认 `999.999` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量
 - 在 `build/out_hub/` 下构建 sensorhub
-- 回拷 sensorhub 产物到产品目录
+- family/project 校验只依赖 main defconfig 与 sensorhub defconfig，不强制依赖产品目录
 - 执行 firmware 或 ota 阶段
 
 ## 基于当前配置继续编译
@@ -193,11 +149,11 @@ active-build -c sensorhub-ota -u release -j 8
 
 ## BuildPlan 队列
 
-CLI 一次只执行一个 BuildPlan。若需要串行多个构建计划或 bstyle 计划，先整体展示所有 BuildPlan 并确认，再顺序执行。队列中可以混合 `action=build` 和 `action=bstylenc`：
+CLI 一次只执行一个构建计划或一次 bstyle 编译。若需要串行多个任务，先整体展示所有命令并确认，再顺序执行：
 
 ```sh
 active-build -i /tmp/active-build-plan-1.json
-active-build -i /tmp/active-build-bstyle-plan-2.json
+active-bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style -w /home/zepp/workspace/mod
 active-build -i /tmp/active-build-plan-3.json
 ```
 

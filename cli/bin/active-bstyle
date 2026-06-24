@@ -20,4 +20,4 @@ else
   export PYTHONPATH="$CLI_DIR/src"
 fi
 
-exec python3 -m active_cli.active_build_cli "$@"
+exec python3 -m active_cli.active_bstyle_cli "$@"

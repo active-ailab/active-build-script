@@ -10,7 +10,8 @@ authors = [
 dependencies = []
 
 [project.scripts]
-active-build = "active_build.cli:main"
+active-build = "active_cli.active_build_cli:main"
+active-bstyle = "active_cli.active_bstyle_cli:main"
 
 [build-system]
 requires = ["hatchling>=1.26"]

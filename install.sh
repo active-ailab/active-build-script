@@ -2,6 +2,7 @@
 set -eu
 
 APP_NAME="${APP_NAME:-active-build}"
+BSTYLE_APP_NAME="${BSTYLE_APP_NAME:-active-bstyle}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 PROJECT_DIR="${PROJECT_DIR:-}"
 SKILL_PROJECT_ROOT="${SKILL_PROJECT_ROOT:-}"
@@ -117,19 +118,28 @@ resolve_project_dir() {
     PROJECT_DIR="$(script_dir)"
   fi
   is_absolute_path "$PROJECT_DIR" || die "PROJECT_DIR 必须是绝对路径。"
-  [ -f "$PROJECT_DIR/cli/src/active_build/cli.py" ] || die "源码目录不完整：$PROJECT_DIR"
+  [ -f "$PROJECT_DIR/cli/src/active_cli/active_common.py" ] || die "公共源码目录不完整：$PROJECT_DIR"
+  [ -f "$PROJECT_DIR/cli/src/active_cli/active_build_cli.py" ] || die "active-build 源码目录不完整：$PROJECT_DIR"
+  [ -f "$PROJECT_DIR/cli/src/active_cli/active_bstyle_cli.py" ] || die "active-bstyle 源码目录不完整：$PROJECT_DIR"
 }
 
 install_cli() {
   resolve_project_dir
   _source="$PROJECT_DIR/cli/bin/$APP_NAME"
   [ -f "$_source" ] || die "缺少 CLI 入口：$_source"
+  _bstyle_source="$PROJECT_DIR/cli/bin/$BSTYLE_APP_NAME"
+  [ -f "$_bstyle_source" ] || die "缺少 CLI 入口：$_bstyle_source"
 
   mkdir -p "$BIN_DIR"
   ln -sfn "$_source" "$BIN_DIR/$APP_NAME"
   say "已安装 CLI: $BIN_DIR/$APP_NAME -> $_source"
+  ln -sfn "$_bstyle_source" "$BIN_DIR/$BSTYLE_APP_NAME"
+  say "已安装 CLI: $BIN_DIR/$BSTYLE_APP_NAME -> $_bstyle_source"
 
   if ! has_cmd "$APP_NAME"; then
+    warn "$BIN_DIR 可能不在 PATH 中。可加入 shell 配置：export PATH=\"$BIN_DIR:\$PATH\""
+  fi
+  if ! has_cmd "$BSTYLE_APP_NAME"; then
     warn "$BIN_DIR 可能不在 PATH 中。可加入 shell 配置：export PATH=\"$BIN_DIR:\$PATH\""
   fi
 }
@@ -182,7 +192,9 @@ print_version() {
   [ -f "$PROJECT_DIR/VERSION" ] && _version="$(cat "$PROJECT_DIR/VERSION")"
   say "$APP_NAME installer version: $_version"
   say "source path: $PROJECT_DIR"
-  say "cli source: $PROJECT_DIR/cli/src/active_build/cli.py"
+  say "common source: $PROJECT_DIR/cli/src/active_cli/active_common.py"
+  say "active-build entry: $PROJECT_DIR/cli/src/active_cli/active_build_cli.py"
+  say "active-bstyle entry: $PROJECT_DIR/cli/src/active_cli/active_bstyle_cli.py"
 }
 
 print_help() {
@@ -191,14 +203,15 @@ active-build installer
 
 用法:
   sh install.sh              安装 CLI 和 Skill
-  sh install.sh cli          只安装/刷新 active-build CLI
-  sh install.sh skills       安装 Skill，并刷新 active-build CLI
+  sh install.sh cli          只安装/刷新 active-build 和 active-bstyle CLI
+  sh install.sh skills       安装 Skill，并刷新 active-build 和 active-bstyle CLI
   sh install.sh version      查看版本和源码路径
   sh install.sh help         查看帮助
 
 环境变量:
   PROJECT_DIR                active-build 工程目录；默认取 install.sh 所在目录
   BIN_DIR                    CLI 安装目录；默认 $HOME/.local/bin
+  BSTYLE_APP_NAME            bstyle CLI 名称；默认 active-bstyle
   SKILL_PROJECT_ROOT         Active 项目根目录绝对路径
   SKILL_PLUGIN               codex 或 github-copilot，也支持 1 或 2
   SKILL_INSTALL_DIR          直接指定 skills 安装目录
