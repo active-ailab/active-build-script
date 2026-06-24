@@ -2,6 +2,7 @@
 # Owner: cs-dongqi@zepp.com
 # Organization: Active.Bu
 import argparse
+import curses
 import filecmp
 import json
 import multiprocessing
@@ -38,6 +39,7 @@ from .active_common import (
     run_cmd,
     is_back,
 )
+from .active_tui import FieldType, MenuItem, MenuSection, TuiPage
 
 DEFAULT_VERSION = "10.0.0"
 DEFAULT_BUILD_FW_VER = "999.999"
@@ -375,6 +377,8 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
     if len(argv) == 0:
         if configs_dir is None:
             _, project_root, configs_dir, _ = locate_project_root(cwd)
+        if sys.stdout.isatty():
+            return collect_tui_build_plan(project_root, configs_dir)
         return collect_interactive_plan(project_root, configs_dir)
 
     parser = build_arg_parser()
@@ -656,6 +660,143 @@ def collect_interactive_advanced_plan(family, project, default_version, default_
                 log=log,
             )
         )
+
+
+def collect_tui_build_plan(project_root, configs_dir):
+    """menuconfig-style TUI that faithfully mirrors collect_interactive_plan.
+
+    Dependency relationships (1:1 with existing linear flow):
+      - family  → refreshes project (cascading options)
+      - project ← must be re-calculated when family changes
+      - entry   → quick/advanced visibility toggle (two mutually exclusive sections)
+      - adv_use_default_version  → adv_version enabled/disabled
+      - Back navigation  → Esc = cancel entire form (same as Ctrl-C in text mode)
+    """
+    last_threads = load_last_threads(project_root)
+    default_threads = int(last_threads) if last_threads else multiprocessing.cpu_count() * 2
+    default_version = default_version_for_project(project_root)
+
+    families = find_available_families(configs_dir)
+    if not families:
+        fail("configs 下未找到可用芯片目录")
+
+    initial_family = families[0]
+    projects = list_projects(project_root, configs_dir, initial_family)
+    if not projects:
+        fail(f"{initial_family} 下未找到可编译的 defconfig")
+    initial_project = projects[0]
+
+    BUILD_TYPE_OPTS = ["默认", "debug", "inspect", "release_log", "release"]
+    QUICK_MODES = ["release", "debug", "sim"]
+    ADV_MODES = ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
+
+    page = TuiPage(
+        title="active-build",
+        sections=[
+            MenuSection("Target", items=[
+                MenuItem("Chip Family", "family", FieldType.CHOICE,
+                         value=None, options=families),
+                MenuItem("Project", "project", FieldType.CHOICE,
+                         value=None,
+                         options_provider=lambda s: list_projects(project_root, configs_dir, s.get("family", "")),
+                         refreshes=["family"],
+                         enabled_when=lambda s: bool(s.get("family"))),
+            ]),
+            MenuSection("Build Entry", items=[
+                MenuItem("构建入口", "entry", FieldType.CHOICE,
+                         value=None,
+                         options=["快速完整编译", "高级构建"],
+                         enabled_when=lambda s: bool(s.get("project"))),
+            ]),
+            # ── 快速完整编译  (visible when entry == "快速完整编译") ──
+            MenuSection("Quick Build", visible_when=lambda s: s.get("entry") == "快速完整编译", items=[
+                MenuItem("编译模式", "quick_mode", FieldType.CHOICE,
+                         value="release", options=QUICK_MODES),
+                MenuItem("编译线程数", "quick_threads", FieldType.TEXT,
+                         value=str(default_threads)),
+            ]),
+            # ── 高级构建  (visible when entry == "高级构建") ──
+            MenuSection("Advanced Build", visible_when=lambda s: s.get("entry") == "高级构建", items=[
+                MenuItem("构建模式", "adv_mode", FieldType.CHOICE,
+                         value="sensorhub-ota", options=ADV_MODES),
+                MenuItem("重新加载 defconfig", "adv_reload_defconfig", FieldType.TOGGLE,
+                         value=True),
+                MenuItem("使用默认版本", "adv_use_default_version", FieldType.TOGGLE,
+                         value=True,
+                         refreshes=["adv_version"]),
+                MenuItem("自定义版本号", "adv_version", FieldType.TEXT,
+                         value=None,
+                         enabled_when=lambda s: not s.get("adv_use_default_version", True)),
+                MenuItem("全局 BUILD_TYPE", "adv_build_type", FieldType.CHOICE,
+                         value="默认", options=BUILD_TYPE_OPTS),
+                MenuItem("main/fw/ota BUILD_TYPE", "adv_main_build_type", FieldType.CHOICE,
+                         value="默认", options=BUILD_TYPE_OPTS),
+                MenuItem("sensorhub BUILD_TYPE", "adv_sensorhub_build_type", FieldType.CHOICE,
+                         value="默认", options=BUILD_TYPE_OPTS),
+                MenuItem("写入构建日志", "adv_log", FieldType.TOGGLE,
+                         value=True),
+                MenuItem("编译线程数", "adv_threads", FieldType.TEXT,
+                         value=str(default_threads)),
+            ]),
+        ],
+        actions=[
+            MenuItem("Start Build", "_start", FieldType.ACTION),
+            MenuItem("Exit", "_exit", FieldType.ACTION),
+        ],
+    )
+
+    try:
+        result = curses.wrapper(page.run)
+    except curses.error:
+        # Terminal too small or curses init failed — fall back to text mode
+        print(f"{YELLOW}TUI 初始化失败，回退到文本交互模式{RESET}")
+        return collect_interactive_plan(project_root, configs_dir)
+
+    if result is None or result.get("_action") != "_start":
+        sys.exit(0)
+
+    family = result.get("family", initial_family)
+    project = result.get("project", initial_project)
+
+    if result.get("entry") == "快速完整编译":
+        return normalize_plan(BuildPlan(
+            family=family,
+            project=project,
+            mode=result.get("quick_mode", "release"),
+            threads=result.get("quick_threads", str(default_threads)),
+            reload_defconfig=True,
+            version=default_version,
+            version_explicit=False,
+            build_type=None,
+            main_build_type=None,
+            sensorhub_build_type=None,
+            log=False,
+        ))
+    else:
+        build_type = _tui_opt_build_type(result.get("adv_build_type"))
+        main_bt = _tui_opt_build_type(result.get("adv_main_build_type"))
+        sensorhub_bt = _tui_opt_build_type(result.get("adv_sensorhub_build_type"))
+        use_default = result.get("adv_use_default_version", True)
+        return normalize_plan(BuildPlan(
+            family=family,
+            project=project,
+            mode=result.get("adv_mode", "sensorhub-ota"),
+            threads=result.get("adv_threads", str(default_threads)),
+            reload_defconfig=result.get("adv_reload_defconfig", True),
+            version=result.get("adv_version", default_version) if not use_default else default_version,
+            version_explicit=not use_default,
+            build_type=build_type,
+            main_build_type=main_bt,
+            sensorhub_build_type=sensorhub_bt,
+            log=result.get("adv_log", True),
+        ))
+
+
+def _tui_opt_build_type(value):
+    """Map TUI build-type display name to internal value (None for 默认)."""
+    if value in (None, "", "默认"):
+        return None
+    return value
 
 
 def collect_interactive_plan(project_root, configs_dir):

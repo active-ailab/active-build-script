@@ -2,6 +2,7 @@
 # Owner: cs-dongqi@zepp.com
 # Organization: Active.Bu
 import argparse
+import curses
 import json
 import os
 import platform
@@ -17,9 +18,11 @@ from .active_common import (
     RESET,
     YELLOW,
     fail,
+    find_available_families,
     find_project_families,
     find_main_defconfig,
     is_back,
+    list_projects,
     load_build_state,
     locate_project_root,
     normalize_bool,
@@ -32,6 +35,7 @@ from .active_common import (
     read_config_value,
     run_cmd,
 )
+from .active_tui import FieldType, MenuItem, MenuSection, TuiPage
 
 
 HELP_TEXT = """\
@@ -163,6 +167,108 @@ def prompt_output_path(start_dir, allow_back=False):
         if raw:
             return raw if os.path.isabs(raw) else os.path.abspath(os.path.join(start_dir, raw))
         print(f"{RED}bstyle 输出文件路径不能为空{RESET}")
+
+
+def collect_tui_bstyle_plan(start_dir, project_root, configs_dir):
+    """menuconfig-style TUI that faithfully mirrors collect_interactive_bstyle_plan.
+
+    Dependency relationships (1:1 with existing linear flow):
+      - family  → refreshes project (cascading options)
+      - input   → on_change auto-derives default output via default_bstyle_output()
+      - modify_output  → custom_output visibility toggle
+    """
+    families = find_available_families(configs_dir)
+    if not families:
+        fail("configs 下未找到可用芯片目录")
+
+    initial_family = families[0]
+    projects = list_projects(project_root, configs_dir, initial_family)
+    if not projects:
+        fail(f"{initial_family} 下未找到可用于 bstyle 的 defconfig")
+    initial_project = projects[0]
+
+    page = TuiPage(
+        title="active-bstyle",
+        sections=[
+            MenuSection("Target", items=[
+                MenuItem("Chip Family", "family", FieldType.CHOICE,
+                         value=None, options=families),
+                MenuItem("Project", "project", FieldType.CHOICE,
+                         value=None,
+                         options_provider=lambda s: list_projects(project_root, configs_dir, s.get("family", "")),
+                         refreshes=["family"],
+                         enabled_when=lambda s: bool(s.get("family"))),
+            ]),
+            MenuSection("Input / Output", items=[
+                MenuItem("Style Input", "input", FieldType.TEXT,
+                         value="",
+                         on_change=_on_input_change,
+                         enabled_when=lambda s: bool(s.get("project"))),
+                MenuItem("Modify output path", "modify_output", FieldType.TOGGLE,
+                         value=True),
+                MenuItem("Custom Output", "custom_output", FieldType.TEXT,
+                         value="",
+                         enabled_when=lambda s: s.get("modify_output", True),
+                         visible_when=lambda s: s.get("modify_output", True)),
+            ]),
+        ],
+        actions=[
+            MenuItem("Start", "_start", FieldType.ACTION),
+            MenuItem("Exit", "_exit", FieldType.ACTION),
+        ],
+    )
+
+    try:
+        result = curses.wrapper(page.run)
+    except curses.error:
+        print(f"{YELLOW}TUI 初始化失败，回退到文本交互模式{RESET}")
+        return collect_interactive_bstyle_plan(start_dir, project_root, configs_dir)
+
+    if result is None or result.get("_action") != "_start":
+        sys.exit(0)
+
+    family = result.get("family", initial_family)
+    project_name = result.get("project", initial_project)
+
+    input_raw = (result.get("input") or "").strip()
+    if not input_raw:
+        fail("style 输入文件路径不能为空")
+
+    input_path = input_raw if os.path.isabs(input_raw) else os.path.abspath(os.path.join(start_dir, input_raw))
+    if not input_path.endswith(".style"):
+        fail(f"输入文件必须是 .style: {input_path}")
+    if not os.path.isfile(input_path):
+        fail(f"style 输入文件不存在: {input_path}")
+
+    if result.get("modify_output", True):
+        output_raw = (result.get("custom_output") or "").strip()
+        if not output_raw:
+            fail("bstyle 输出文件路径不能为空")
+        output_path = output_raw if os.path.isabs(output_raw) else os.path.abspath(os.path.join(start_dir, output_raw))
+    else:
+        output_path = default_bstyle_output(input_path)
+
+    return normalize_bstyle_plan(BstylePlan(
+        family=family,
+        project=project_name,
+        input=input_path,
+        output=output_path,
+        workspace=project_root,
+    ))
+
+
+def _on_input_change(state, page):
+    """Auto-derive default output path when style input changes."""
+    input_val = (state.get("input") or "").strip()
+    if input_val and input_val.endswith(".style"):
+        derived = os.path.splitext(input_val)[0] + ".bstyle"
+        if not state.get("modify_output", True):
+            # Find the custom_output item and update its value
+            for section in page.sections:
+                for item in section.items:
+                    if item.key == "custom_output":
+                        item.value = derived
+                        return
 
 
 def collect_interactive_bstyle_plan(start_dir, project_root, configs_dir):
@@ -396,7 +502,10 @@ def main(argv=None):
         sys.exit(0)
     if len(argv) == 0:
         start_dir, project_root, configs_dir, build_dir = locate_project_root(os.getcwd())
-        plan = collect_interactive_bstyle_plan(start_dir, project_root, configs_dir)
+        if sys.stdout.isatty():
+            plan = collect_tui_bstyle_plan(start_dir, project_root, configs_dir)
+        else:
+            plan = collect_interactive_bstyle_plan(start_dir, project_root, configs_dir)
     else:
         plan = parse_args(argv)
         start_dir, project_root, configs_dir, build_dir = locate_project_root(
