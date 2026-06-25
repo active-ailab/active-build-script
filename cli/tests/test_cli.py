@@ -1,3 +1,5 @@
+# Owner: cs-dongqi@zepp.com
+# Organization: Active.Bu
 import json
 import sys
 import tempfile
@@ -59,6 +61,76 @@ def enable_build_fw_ver(root: Path) -> None:
 
 
 class ActiveBuildCliTest(unittest.TestCase):
+    def test_probe_python3_default_reports_ok(self):
+        result = mock.Mock(returncode=0, stdout="Python 3.8.10\n", stderr="")
+        with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/python"):
+            with mock.patch.object(cli.subprocess, "run", return_value=result):
+                status = cli.probe_python3_default()
+
+        self.assertTrue(status.ok)
+        self.assertEqual(status.path, "/usr/bin/python")
+        self.assertEqual(status.version_text, "Python 3.8.10")
+        self.assertIn("OK", status.message)
+
+    def test_probe_python3_default_reports_non_ok_version(self):
+        result = mock.Mock(returncode=0, stdout="", stderr="Python 2.7.18\n")
+        with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/python"):
+            with mock.patch.object(cli.subprocess, "run", return_value=result):
+                status = cli.probe_python3_default()
+
+        self.assertFalse(status.ok)
+        self.assertEqual(status.path, "/usr/bin/python")
+        self.assertEqual(status.version_text, "Python 2.7.18")
+        self.assertIn("NOT OK", status.message)
+
+    def test_probe_python3_default_reports_missing_python(self):
+        with mock.patch.object(cli.shutil, "which", return_value=None):
+            with mock.patch.object(cli.subprocess, "run") as run:
+                status = cli.probe_python3_default()
+
+        self.assertFalse(status.ok)
+        self.assertIsNone(status.path)
+        self.assertIn("NOT OK", status.message)
+        run.assert_not_called()
+
+    def test_ensure_python3_default_blocks_without_auto_fix(self):
+        status = cli.PythonStatus(
+            ok=False,
+            path="/usr/bin/python",
+            version_text="Python 2.7.18",
+            message="NOT OK  /usr/bin/python (Python 2.7.18)",
+        )
+        with mock.patch.object(cli, "probe_python3_default", return_value=status):
+            with mock.patch.object(cli.subprocess, "run") as run:
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.ensure_python3_default()
+
+        self.assertEqual(ctx.exception.code, 1)
+        run.assert_not_called()
+
+    def test_tui_start_guard_blocks_non_python3(self):
+        status = cli.PythonStatus(
+            ok=False,
+            path="/usr/bin/python",
+            version_text="Python 2.7.18",
+            message="NOT OK  /usr/bin/python (Python 2.7.18)",
+        )
+        with mock.patch.object(cli, "probe_python3_default", return_value=status):
+            message = cli.block_start_when_python_not_ok({})
+
+        self.assertIn("无法开始构建", message)
+        self.assertIn("Python 2.7.18", message)
+
+    def test_tui_start_guard_allows_python3(self):
+        status = cli.PythonStatus(
+            ok=True,
+            path="/usr/bin/python",
+            version_text="Python 3.8.10",
+            message="OK  /usr/bin/python (Python 3.8.10)",
+        )
+        with mock.patch.object(cli, "probe_python3_default", return_value=status):
+            self.assertIsNone(cli.block_start_when_python_not_ok({}))
+
     def test_locate_project_root_from_subdir_and_build_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

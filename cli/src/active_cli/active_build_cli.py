@@ -39,7 +39,7 @@ from .active_common import (
     run_cmd,
     is_back,
 )
-from .active_tui import FieldType, MenuItem, MenuSection, TuiPage
+from .active_tui import FieldType, MenuItem, MenuSection, StatusItem, TuiPage
 
 DEFAULT_VERSION = "10.0.0"
 DEFAULT_BUILD_FW_VER = "999.999"
@@ -112,6 +112,14 @@ class BuildLogger(ActiveLogger):
         super().__init__(build_dir, "active-build", family, project, enabled)
 
 
+@dataclass
+class PythonStatus:
+    ok: bool
+    path: str = None
+    version_text: str = None
+    message: str = ""
+
+
 def print_help():
     print(HELP_TEXT)
 
@@ -133,33 +141,58 @@ def get_default_python_version():
     return python_path, version_text
 
 
-def ensure_python3_default():
+def probe_python3_default():
     python_path, version_text = get_default_python_version()
     if version_text and version_text.startswith("Python 3"):
-        print(f"{GREEN}当前默认 python 正常: {python_path} ({version_text}){RESET}")
+        return PythonStatus(
+            ok=True,
+            path=python_path,
+            version_text=version_text,
+            message=f"OK  {python_path} ({version_text})",
+        )
+    if python_path and version_text:
+        return PythonStatus(
+            ok=False,
+            path=python_path,
+            version_text=version_text,
+            message=f"NOT OK  {python_path} ({version_text})",
+        )
+    if python_path:
+        return PythonStatus(
+            ok=False,
+            path=python_path,
+            version_text=None,
+            message=f"NOT OK  {python_path} (版本未知)",
+        )
+    return PythonStatus(
+        ok=False,
+        path=None,
+        version_text=None,
+        message="NOT OK  python command not found",
+    )
+
+
+def ensure_python3_default():
+    status = probe_python3_default()
+    if status.ok:
+        print(f"{GREEN}当前默认 python 正常: {status.path} ({status.version_text}){RESET}")
         return
 
     print(f"{YELLOW}检测到默认 python 不是 Python 3{RESET}")
-    if python_path and version_text:
-        print(f"{YELLOW}当前默认 python: {python_path} ({version_text}){RESET}")
-    elif python_path:
-        print(f"{YELLOW}当前默认 python: {python_path} (版本未知){RESET}")
+    if status.path and status.version_text:
+        print(f"{YELLOW}当前默认 python: {status.path} ({status.version_text}){RESET}")
+    elif status.path:
+        print(f"{YELLOW}当前默认 python: {status.path} (版本未知){RESET}")
     else:
         print(f"{YELLOW}当前环境未找到 python 命令{RESET}")
+    fail("默认 python 必须是 Python 3，请用户自行调整后重新开始构建")
 
-    if shutil.which("update-alternatives") is None:
-        fail("未找到 update-alternatives，请手动切换默认 python 到 Python 3 后再编译")
 
-    print(f"{YELLOW}尝试启动: sudo update-alternatives --config python{RESET}")
-    result = subprocess.run("sudo update-alternatives --config python", shell=True)
-    if result.returncode != 0:
-        fail("切换命令执行失败，请手动切换默认 python 到 Python 3 后再编译")
-
-    _, new_version_text = get_default_python_version()
-    if new_version_text and new_version_text.startswith("Python 3"):
-        print(f"{GREEN}默认 python 已切换为 Python 3 ({new_version_text}){RESET}")
-        return
-    fail("切换后默认 python 仍不是 Python 3，请手动处理后再编译")
+def block_start_when_python_not_ok(_state):
+    status = probe_python3_default()
+    if status.ok:
+        return None
+    return f"Python 状态异常，无法开始构建。\n{status.message}\n请自行调整默认 python 到 Python 3 后重试。"
 
 
 def normalize_threads_value(value):
@@ -689,6 +722,7 @@ def collect_tui_build_plan(project_root, configs_dir):
     BUILD_TYPE_OPTS = ["默认", "debug", "inspect", "release_log", "release"]
     QUICK_MODES = ["release", "debug", "sim"]
     ADV_MODES = ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
+    python_status = probe_python3_default()
 
     page = TuiPage(
         title="active-build",
@@ -740,8 +774,12 @@ def collect_tui_build_plan(project_root, configs_dir):
             ]),
         ],
         actions=[
-            MenuItem("Start Build", "_start", FieldType.ACTION),
+            MenuItem("Start Build", "_start", FieldType.ACTION,
+                     action_guard=block_start_when_python_not_ok),
             MenuItem("Exit", "_exit", FieldType.ACTION),
+        ],
+        status_items=[
+            StatusItem("Python", python_status.message, python_status.ok),
         ],
     )
 

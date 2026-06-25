@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Owner: cs-dongqi@zepp.com
+# Organization: Active.Bu
 """Curses-based menuconfig-like TUI framework for active-build-script.
 
 Zero external dependencies — uses Python stdlib `curses` only.
@@ -51,6 +53,8 @@ class MenuItem:
     refreshes: list[str] = field(default_factory=list)
     # Called after value change: lambda(state: dict, page: TuiPage) -> None
     on_change: Optional[Callable] = None
+    # ACTION only: lambda(state: dict) -> message string when action should be blocked.
+    action_guard: Optional[Callable] = None
 
 
 @dataclass
@@ -58,6 +62,13 @@ class MenuSection:
     title: Optional[str] = None
     items: list[MenuItem] = field(default_factory=list)
     visible_when: Optional[Callable] = None
+
+
+@dataclass
+class StatusItem:
+    label: str
+    value: str
+    ok: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -79,12 +90,14 @@ class _Row:
 # ---------------------------------------------------------------------------
 
 class TuiPage:
-    def __init__(self, title, sections=None, actions=None, max_width=88):
+    def __init__(self, title, sections=None, actions=None, status_items=None, max_width=88):
         self.title = title
         self.sections = sections or []
         self.actions = actions or []
+        self.status_items = status_items or []
         self.max_width = max_width
         self._stdscr = None
+        self._gray_highlight_enabled = False
 
     # -- public API ---------------------------------------------------------
 
@@ -108,9 +121,23 @@ class TuiPage:
             curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)   # title bar
             curses.init_pair(3, curses.COLOR_YELLOW, -1)                 # section header
             curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_WHITE)  # popup highlight
+            curses.init_pair(5, curses.COLOR_GREEN, -1)                  # OK status
+            curses.init_pair(6, curses.COLOR_RED, -1)                    # error status
+            self._gray_highlight_enabled = False
+            if getattr(curses, "COLORS", 0) >= 256:
+                try:
+                    curses.init_pair(7, -1, 240)                         # focused row gray bg
+                    self._gray_highlight_enabled = True
+                except curses.error:
+                    self._gray_highlight_enabled = False
 
     def _attr(self, pair):
         return curses.color_pair(pair) if curses.has_colors() else curses.A_NORMAL
+
+    def _highlight_attr(self):
+        if self._gray_highlight_enabled:
+            return self._attr(7) | curses.A_BOLD
+        return curses.A_BOLD
 
     def _collect_state(self) -> dict:
         """Walk all items across all sections and collect {key: value}."""
@@ -228,8 +255,9 @@ class TuiPage:
             total_rows = len(render_rows)
             height, full_w = self._stdscr.getmaxyx()
             action_area_rows = 2 if self.actions else 0
+            status_area_rows = len(self.status_items)
             help_bar_rows = 1
-            body_height = height - 1 - action_area_rows - help_bar_rows  # -1 for title
+            body_height = height - 1 - action_area_rows - status_area_rows - help_bar_rows  # -1 for title
 
             # Content area: capped at max_width, centered on terminal
             safe_w = full_w - 1
@@ -275,6 +303,8 @@ class TuiPage:
 
             # Action bar (within content area)
             action_base_y = height - action_area_rows - help_bar_rows
+            status_base_y = action_base_y - status_area_rows
+            self._draw_status(status_base_y, content_w, margin_x)
             self._draw_actions(action_base_y, content_w, margin_x, action_mode, action_focused)
 
             # Help bar (full width, status-bar style)
@@ -301,8 +331,14 @@ class TuiPage:
                         action_focused = (action_focused + 1) % len(self.actions)
                 elif key in (curses.KEY_ENTER, 10, 13):
                     if 0 <= action_focused < len(self.actions):
+                        action = self.actions[action_focused]
+                        if action.action_guard:
+                            message = action.action_guard(self._collect_state())
+                            if message:
+                                self._popup_message(action.label, message, ok=False)
+                                continue
                         result = self._collect_state()
-                        result["_action"] = self.actions[action_focused].key
+                        result["_action"] = action.key
                         return result
                 elif key == 27:  # Esc
                     action_mode = False
@@ -396,7 +432,7 @@ class TuiPage:
         safe_cw = content_w - 1  # never write to last column
 
         if is_focused:
-            attr |= self._attr(1)
+            attr |= self._highlight_attr()
         if not is_enabled:
             attr |= curses.A_DIM
 
@@ -424,12 +460,13 @@ class TuiPage:
         # gap fills remaining display space
         gap = max(1, safe_cw - label_dw - val_dw)
         line = label_visible + " " * gap + val_str
+        if is_focused and line:
+            line = ">" + line[1:]
         # No char-level truncation needed — display-width math guarantees exact fit
 
         try:
-            if is_focused:
-                # full-line highlight within content area
-                stdscr.addstr(y, margin_x, " " * content_w, attr)
+            if is_focused and self._gray_highlight_enabled:
+                stdscr.addstr(y, margin_x, " " * safe_cw, attr)
             stdscr.addstr(y, margin_x, line, attr)
         except curses.error:
             pass
@@ -443,7 +480,7 @@ class TuiPage:
         parts = []
         for i, act in enumerate(self.actions):
             if is_active and i == focused_idx:
-                parts.append((f"[ ▶ {act.label} ]", self._attr(1) | curses.A_BOLD))
+                parts.append((f"[ > {act.label} ]", self._highlight_attr()))
             else:
                 parts.append((f"[   {act.label} ]", curses.A_NORMAL | (curses.A_DIM if not is_active else 0)))
 
@@ -458,6 +495,25 @@ class TuiPage:
                 x += len(text) + 1
         except curses.error:
             pass
+
+    def _draw_status(self, base_y, content_w, margin_x):
+        if not self.status_items:
+            return
+        stdscr = self._stdscr
+        safe_w = content_w - 1
+
+        for offset, item in enumerate(self.status_items):
+            y = base_y + offset
+            status_text = f" {item.label}: {item.value} "
+            status_text = self._truncate_by_dw(status_text, safe_w)
+            attr = self._attr(5 if item.ok else 6) | curses.A_BOLD
+            status_dw = self._display_width(status_text)
+            x = margin_x + max(0, (safe_w - status_dw) // 2)
+            try:
+                stdscr.addstr(y, margin_x, " " * content_w, curses.A_NORMAL)
+                stdscr.addstr(y, x, status_text, attr)
+            except curses.error:
+                pass
 
     # -- field interaction --------------------------------------------------
 
@@ -522,13 +578,13 @@ class TuiPage:
                 if opt_idx >= len(options):
                     break
                 opt = options[opt_idx]
-                display = f"  {opt}"
+                display = f"> {opt}" if opt_idx == selected else f"  {opt}"
                 display = self._truncate_by_dw(display, popup_width - 4)
                 pad = popup_width - 4 - self._display_width(display)
                 display += " " * max(0, pad)
                 if opt_idx == selected:
                     try:
-                        popup.addstr(i + 1, 1, display, self._attr(4))
+                        popup.addstr(i + 1, 1, display, self._highlight_attr())
                     except curses.error:
                         pass
                 else:
@@ -550,6 +606,42 @@ class TuiPage:
             elif key == 27:  # Esc
                 return
 
+    def _popup_message(self, title, message, ok=True):
+        lines = [line for line in str(message).splitlines() if line]
+        if not lines:
+            lines = [""]
+
+        max_line_dw = max(self._display_width(line) for line in lines)
+        title_text = f" {title} "
+        title_dw = self._display_width(title_text)
+        popup_width = min(max(max_line_dw, title_dw, 24) + 6, self._stdscr.getmaxyx()[1] - 2)
+        popup_width = max(popup_width, 24)
+        popup_height = min(len(lines) + 4, self._stdscr.getmaxyx()[0] - 2)
+        start_y = max(0, (self._stdscr.getmaxyx()[0] - popup_height) // 2)
+        start_x = max(0, (self._stdscr.getmaxyx()[1] - popup_width) // 2)
+
+        popup = curses.newwin(popup_height, popup_width, start_y, start_x)
+        popup.keypad(True)
+        attr = self._attr(5 if ok else 6) | curses.A_BOLD
+
+        while True:
+            popup.erase()
+            popup.box()
+            try:
+                popup.addstr(0, 2, self._truncate_by_dw(title_text, popup_width - 4), attr)
+                for index, line in enumerate(lines[: popup_height - 3], start=1):
+                    popup.addstr(index + 1, 2, self._truncate_by_dw(line, popup_width - 4), attr)
+                hint = " Press Enter/Esc "
+                hint_x = max(1, (popup_width - len(hint)) // 2)
+                popup.addstr(popup_height - 2, hint_x, hint[: popup_width - hint_x - 1], curses.A_DIM)
+            except curses.error:
+                pass
+            popup.refresh()
+
+            key = popup.getch()
+            if key in (curses.KEY_ENTER, 10, 13, 27):
+                return
+
     def _prompt_text(self, item):
         """Centered popup text-input dialog, like CHOICE popup but for typing."""
         current = str(item.value) if item.value not in (None, "") else ""
@@ -569,87 +661,82 @@ class TuiPage:
         cursor = len(buffer)
         finished = False
 
-        while not finished:
-            win.erase()
-            win.box()
+        try:
+            while not finished:
+                win.erase()
+                win.box()
 
-            # Title
-            try:
-                win.addstr(0, 2, self._truncate_by_dw(label, pw - 4),
-                           self._attr(2) | curses.A_BOLD)
-            except curses.error:
-                pass
+                # Title
+                try:
+                    win.addstr(0, 2, self._truncate_by_dw(label, pw - 4),
+                               self._attr(2) | curses.A_BOLD)
+                except curses.error:
+                    pass
 
-            # Input line
-            prefix = "  "
-            input_col = 2  # after prefix within win
-            max_visible = pw - 4  # available for typed text display
-            text = "".join(buffer)
-            display_text = text
-            if self._display_width(text) > max_visible:
-                # Scroll: show end of text
-                display_text = ""
-                w = 0
-                for ch in reversed(text):
-                    cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
-                    if w + cw > max_visible:
+                # Input line
+                max_visible = pw - 4  # available for typed text display
+                max_cursor_col = max(0, max_visible - 1)
+                start = 0
+                while self._display_width("".join(buffer[start:cursor])) > max_cursor_col:
+                    start += 1
+                end = start
+                while end < len(buffer):
+                    candidate = "".join(buffer[start:end + 1])
+                    if self._display_width(candidate) > max_visible:
                         break
-                    display_text = ch + display_text
-                    w += cw
-            # Adjust cursor for scrolling
-            visible_cursor = 0
-            cur_w = 0
-            for i, ch in enumerate(display_text):
-                if i >= cursor:
-                    break
-                cur_w += 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
-            visible_cursor = cur_w
+                    end += 1
+                display_text = "".join(buffer[start:end])
+                cursor_index = cursor - start
 
-            # Draw input background (highlight area)
-            try:
-                win.addstr(2, 2, " " * max_visible, self._attr(1) | curses.A_DIM)
-                win.addstr(2, 2, display_text, self._attr(1))
-                if buffer:
-                    win.move(2, 2 + visible_cursor)
-            except curses.error:
-                pass
+                # Draw input background (highlight area)
+                try:
+                    cursor_index = max(0, min(cursor_index, len(display_text)))
+                    display_with_cursor = display_text[:cursor_index] + "|" + display_text[cursor_index:]
+                    display_with_cursor = self._truncate_by_dw(display_with_cursor, max_visible)
+                    input_attr = self._highlight_attr()
+                    win.addstr(2, 2, " " * max_visible, input_attr)
+                    win.addstr(2, 2, display_with_cursor, input_attr)
+                except curses.error:
+                    pass
 
-            # Help line
-            try:
-                help_line = " Enter: confirm  Esc: cancel "
-                win.addstr(ph - 2, max(1, (pw - len(help_line)) // 2), help_line,
-                           curses.A_DIM)
-            except curses.error:
-                pass
+                # Help line
+                try:
+                    help_line = " Enter: confirm  Esc: cancel "
+                    win.addstr(ph - 2, max(1, (pw - len(help_line)) // 2), help_line,
+                               curses.A_DIM)
+                except curses.error:
+                    pass
 
-            win.refresh()
+                win.refresh()
 
-            curses.curs_set(1)
-            ch = win.getch()
-            if ch in (curses.KEY_ENTER, 10, 13):
-                finished = True
-            elif ch == 27:  # Esc
-                curses.curs_set(0)
-                return
-            elif ch in (curses.KEY_BACKSPACE, 127, 8):
-                if buffer and cursor > 0:
-                    buffer.pop(cursor - 1)
-                    cursor -= 1
-            elif ch == curses.KEY_LEFT:
-                if cursor > 0:
-                    cursor -= 1
-            elif ch == curses.KEY_RIGHT:
-                if cursor < len(buffer):
+                ch = win.getch()
+                if ch in (curses.KEY_ENTER, 10, 13):
+                    finished = True
+                elif ch == 27:  # Esc
+                    return
+                elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if buffer and cursor > 0:
+                        buffer.pop(cursor - 1)
+                        cursor -= 1
+                elif ch == curses.KEY_LEFT:
+                    if cursor > 0:
+                        cursor -= 1
+                elif ch == curses.KEY_RIGHT:
+                    if cursor < len(buffer):
+                        cursor += 1
+                elif ch in (curses.KEY_HOME, 1):  # Ctrl-A
+                    cursor = 0
+                elif ch == 5:  # Ctrl-E
+                    cursor = len(buffer)
+                elif 32 <= ch <= 126:
+                    buffer.insert(cursor, chr(ch))
                     cursor += 1
-            elif ch in (curses.KEY_HOME, 1):  # Ctrl-A
-                cursor = 0
-            elif ch == 5:  # Ctrl-E
-                cursor = len(buffer)
-            elif 32 <= ch <= 126:
-                buffer.insert(cursor, chr(ch))
-                cursor += 1
+        finally:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
 
-        curses.curs_set(0)
         new_value = "".join(buffer).strip()
         if new_value:
             item.value = new_value
