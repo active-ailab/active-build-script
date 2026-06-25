@@ -723,6 +723,52 @@ def collect_tui_build_plan(project_root, configs_dir):
     QUICK_MODES = ["release", "debug", "sim"]
     ADV_MODES = ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
     python_status = probe_python3_default()
+    manifest_status = {"ms": None, "checked": False}
+
+    def _update_status_items(page):
+        items = [StatusItem("Python", python_status.message, python_status.ok)]
+        if manifest_status["checked"]:
+            items.append(StatusItem("Manifest", manifest_status["ms"].message,
+                                    manifest_status["ms"].ok))
+        page.status_items = items
+
+    def _on_project_changed(state, page):
+        p = (state.get("project") or "").strip()
+        if not p:
+            manifest_status["checked"] = False
+        else:
+            manifest_status["ms"] = check_repo_manifest_status(project_root, p)
+            manifest_status["checked"] = True
+        _update_status_items(page)
+
+    def _xml_action_confirm(page):
+        # 1. Python check (keep existing blocking logic)
+        msg = block_start_when_python_not_ok({})
+        if msg:
+            page._popup_message("Start Build", msg, ok=False)
+            return True  # blocked — stay on form
+
+        # 2. XML check — show confirm popup if not OK
+        if not manifest_status["checked"]:
+            return False  # no project selected yet, let action_guard handle it
+        ms = manifest_status["ms"]
+        if ms is None or ms.ok:
+            return False  # XML OK → proceed
+
+        if ms.missing_target:
+            lines = [
+                f"Target XML not found: {ms.target_xml}",
+                "",
+                "This may cause build errors.",
+            ]
+        else:
+            lines = [
+                f"Current manifest: {ms.current_xml}",
+                f"Project requires:  {ms.target_xml}",
+                "",
+                "It is recommended to switch manifest first.",
+            ]
+        return page._popup_confirm("Start Build", lines)
 
     page = TuiPage(
         title="active-build",
@@ -734,7 +780,8 @@ def collect_tui_build_plan(project_root, configs_dir):
                          value=None,
                          options_provider=lambda s: list_projects(project_root, configs_dir, s.get("family", "")),
                          refreshes=["family"],
-                         enabled_when=lambda s: bool(s.get("family"))),
+                         enabled_when=lambda s: bool(s.get("family")),
+                         on_change=_on_project_changed),
             ]),
             MenuSection("Build Entry", items=[
                 MenuItem("构建入口", "entry", FieldType.CHOICE,
@@ -775,6 +822,7 @@ def collect_tui_build_plan(project_root, configs_dir):
         ],
         actions=[
             MenuItem("Start Build", "_start", FieldType.ACTION,
+                     action_confirm=_xml_action_confirm,
                      action_guard=block_start_when_python_not_ok),
             MenuItem("Exit", "_exit", FieldType.ACTION),
         ],
@@ -797,7 +845,7 @@ def collect_tui_build_plan(project_root, configs_dir):
     project = result.get("project", initial_project)
 
     if result.get("entry") == "快速完整编译":
-        return normalize_plan(BuildPlan(
+        plan = BuildPlan(
             family=family,
             project=project,
             mode=result.get("quick_mode", "release"),
@@ -809,13 +857,13 @@ def collect_tui_build_plan(project_root, configs_dir):
             main_build_type=None,
             sensorhub_build_type=None,
             log=False,
-        ))
+        )
     else:
         build_type = _tui_opt_build_type(result.get("adv_build_type"))
         main_bt = _tui_opt_build_type(result.get("adv_main_build_type"))
         sensorhub_bt = _tui_opt_build_type(result.get("adv_sensorhub_build_type"))
         use_default = result.get("adv_use_default_version", True)
-        return normalize_plan(BuildPlan(
+        plan = BuildPlan(
             family=family,
             project=project,
             mode=result.get("adv_mode", "sensorhub-ota"),
@@ -827,7 +875,9 @@ def collect_tui_build_plan(project_root, configs_dir):
             main_build_type=main_bt,
             sensorhub_build_type=sensorhub_bt,
             log=result.get("adv_log", True),
-        ))
+        )
+    setattr(plan, "_tui_xml_checked", manifest_status["checked"])
+    return normalize_plan(plan)
 
 
 def _tui_opt_build_type(value):
@@ -913,12 +963,97 @@ def read_manifest_includes(manifest_path):
     return includes
 
 
-def manifest_matches_xml(manifest_path, current_xml_name, include_names, xml_name, xml_path):
+def manifest_matches_xml(manifest_path, current_xml_name, include_names, xml_name, xml_path, use_filecmp=False):
     if current_xml_name == xml_name:
         return True
     if xml_name in include_names:
         return True
-    return filecmp.cmp(manifest_path, xml_path, shallow=False)
+    if use_filecmp:
+        return filecmp.cmp(manifest_path, xml_path, shallow=False)
+    return False
+
+
+@dataclass
+class ManifestStatus:
+    ok: bool
+    current_xml: str
+    target_xml: str
+    missing_target: bool = False
+    message: str = ""
+    content_identical: bool = False
+
+
+def check_repo_manifest_status(project_root, project):
+    """Pure read-only manifest check — no print, no input, no sys.exit."""
+    repo_dir = os.path.join(project_root, ".repo")
+    manifest_path = os.path.join(repo_dir, "manifest.xml")
+    manifests_dir = os.path.join(repo_dir, "manifests")
+
+    if not os.path.exists(manifest_path):
+        return ManifestStatus(
+            ok=False, current_xml="N/A", target_xml="",
+            message=f"No manifest: {manifest_path}",
+        )
+    if not os.path.isdir(manifests_dir):
+        return ManifestStatus(
+            ok=False, current_xml="N/A", target_xml="",
+            message=f"No manifests dir: {manifests_dir}",
+        )
+
+    current_manifest_realpath = os.path.realpath(manifest_path)
+    current_xml_name = os.path.basename(current_manifest_realpath)
+    current_include_names = read_manifest_includes(manifest_path)
+    current_display = current_xml_name if current_xml_name else "manifest.xml"
+    if current_include_names:
+        current_display = ", ".join(current_include_names)
+
+    # huamiOS.xml is the global default
+    huamios_xml_path = os.path.join(manifests_dir, "huamiOS.xml")
+    if os.path.exists(huamios_xml_path):
+        if manifest_matches_xml(
+            manifest_path, current_xml_name, current_include_names,
+            "huamiOS.xml", huamios_xml_path,
+            use_filecmp=True,
+        ):
+            return ManifestStatus(
+                ok=True, current_xml="huamiOS.xml", target_xml="huamiOS.xml",
+                message="huamiOS.xml  ✓",
+            )
+
+    project_xml_name = f"{project}.xml"
+    project_xml_path = os.path.join(manifests_dir, project_xml_name)
+
+    if not os.path.exists(project_xml_path):
+        return ManifestStatus(
+            ok=False, current_xml=current_display, target_xml=project_xml_name,
+            missing_target=True,
+            message=f"target {project_xml_name} missing",
+        )
+
+    if manifest_matches_xml(
+        manifest_path, current_xml_name, current_include_names,
+        project_xml_name, project_xml_path,
+    ):
+        # Name or include matched — also verify content
+        content_same = filecmp.cmp(manifest_path, project_xml_path, shallow=False)
+        if content_same:
+            return ManifestStatus(
+                ok=True, current_xml=project_xml_name, target_xml=project_xml_name,
+                message=f"{project_xml_name}  ✓",
+            )
+        return ManifestStatus(
+            ok=False, current_xml=current_display, target_xml=project_xml_name,
+            message=f"{project_xml_name}  (name match, content differs)",
+            content_identical=False,
+        )
+
+    content_same = filecmp.cmp(manifest_path, project_xml_path, shallow=False)
+    tag = "same content" if content_same else "content differs"
+    return ManifestStatus(
+        ok=False, current_xml=current_display, target_xml=project_xml_name,
+        message=f"{current_display}  →  {project_xml_name}  ({tag})",
+        content_identical=content_same,
+    )
 
 
 def print_manifest_check_summary(current_xml, target_xml, should_switch, missing_target=None):
@@ -958,6 +1093,7 @@ def compare_repo_manifest(project_root, project):
             current_include_names,
             "huamiOS.xml",
             huamios_xml_path,
+            use_filecmp=True,
         ):
             print_manifest_check_summary("huamiOS.xml", "huamiOS.xml", False)
             return confirm_manifest_choice(False)
@@ -1250,8 +1386,9 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
             logger.line(f"start: {datetime.now().isoformat(timespec='seconds')}")
             logger.line(f"BuildPlan: {json.dumps(asdict(plan), ensure_ascii=False)}")
 
-        if not plan.use_current_config and not compare_repo_manifest(project_root, plan.project):
-            sys.exit(0)
+        if not plan.use_current_config and not getattr(plan, "_tui_xml_checked", False):
+            if not compare_repo_manifest(project_root, plan.project):
+                sys.exit(0)
 
         if plan.mode == "sim":
             sim_defconfig = resolve_sim_defconfig(project_root, plan.family, plan.project)

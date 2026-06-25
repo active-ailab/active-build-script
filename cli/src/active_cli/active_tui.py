@@ -55,6 +55,9 @@ class MenuItem:
     on_change: Optional[Callable] = None
     # ACTION only: lambda(state: dict) -> message string when action should be blocked.
     action_guard: Optional[Callable] = None
+    # ACTION only: lambda(page: TuiPage) -> bool.  Called BEFORE action_guard.
+    # Returns True → skip this action (Back pressed), False → continue to guard/build.
+    action_confirm: Optional[Callable] = None
 
 
 @dataclass
@@ -206,14 +209,22 @@ class TuiPage:
         return rows, enabled_map
 
     def _refresh_after_change(self, changed_key):
-        """Recalculate options for dependent items."""
+        """Recalculate options for dependent items; trigger on_change for changed ones."""
         state = self._collect_state()
+        affected = []
         for section in self.sections:
             for item in section.items:
                 if changed_key in item.refreshes:
                     opts = self._effective_options(item, state)
                     if item.value not in opts and opts:
                         item.value = opts[0]
+                        affected.append(item)
+        for item in affected:
+            if item.on_change:
+                try:
+                    item.on_change(self._collect_state(), self)
+                except Exception:
+                    pass
 
     def _after_value_change(self, item):
         """Run refreshes + on_change after a value change."""
@@ -332,6 +343,9 @@ class TuiPage:
                 elif key in (curses.KEY_ENTER, 10, 13):
                     if 0 <= action_focused < len(self.actions):
                         action = self.actions[action_focused]
+                        if action.action_confirm:
+                            if action.action_confirm(self):
+                                continue  # user chose Back → stay on form
                         if action.action_guard:
                             message = action.action_guard(self._collect_state())
                             if message:
@@ -641,6 +655,77 @@ class TuiPage:
             key = popup.getch()
             if key in (curses.KEY_ENTER, 10, 13, 27):
                 return
+
+    def _popup_confirm(self, title, lines):
+        """Centered confirm popup with Continue/Back buttons.  Returns True on Back."""
+        lines = [line for line in lines if line]
+        if not lines:
+            lines = [""]
+
+        max_line_dw = max(self._display_width(line) for line in lines)
+        title_dw = self._display_width(f" {title} ")
+        pw = min(max(max_line_dw, title_dw, 30) + 6, self._stdscr.getmaxyx()[1] - 2)
+        pw = max(pw, 24)
+        ph = min(len(lines) + 6, self._stdscr.getmaxyx()[0] - 2)
+        sy = max(0, (self._stdscr.getmaxyx()[0] - ph) // 2)
+        sx = max(0, (self._stdscr.getmaxyx()[1] - pw) // 2)
+
+        win = curses.newwin(ph, pw, sy, sx)
+        win.keypad(True)
+
+        focused = 0  # 0=Continue, 1=Back
+        labels = ["Continue", "Back"]
+
+        while True:
+            win.erase()
+            win.box()
+            # Title
+            try:
+                win.addstr(0, 2, self._truncate_by_dw(f" {title} ", pw - 4),
+                           self._attr(2) | curses.A_BOLD)
+            except curses.error:
+                pass
+            # Lines
+            for i, line in enumerate(lines[: ph - 5], start=1):
+                try:
+                    win.addstr(i + 1, 2, self._truncate_by_dw(line, pw - 4))
+                except curses.error:
+                    pass
+            # Action buttons — match main form style, > moves with focus
+            btn_y = ph - 3
+            btn_labels = ["Continue", "Back"]
+            btn_texts = [
+                f"[ {'>' if i == focused else ' '} {lbl} ]"
+                for i, lbl in enumerate(btn_labels)
+            ]
+            total = sum(len(t) for t in btn_texts) + 1
+            x = max(1, (pw - total) // 2)
+            for i, txt in enumerate(btn_texts):
+                attr = self._highlight_attr() if i == focused else curses.A_NORMAL
+                try:
+                    win.addstr(btn_y, x, txt, attr)
+                except curses.error:
+                    pass
+                x += len(txt) + 1
+            # Hint
+            try:
+                hint = " ←→ choose  Enter confirm "
+                hint_x = max(1, (pw - len(hint)) // 2)
+                win.addstr(ph - 2, hint_x, hint[: pw - hint_x - 1], curses.A_DIM)
+            except curses.error:
+                pass
+
+            win.refresh()
+            key = win.getch()
+
+            if key == curses.KEY_LEFT:
+                focused = (focused - 1) % 2
+            elif key == curses.KEY_RIGHT:
+                focused = (focused + 1) % 2
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return focused == 1  # True=Back, False=Continue
+            elif key == 27:  # Esc → Back
+                return True
 
     def _prompt_text(self, item):
         """Centered popup text-input dialog, like CHOICE popup but for typing."""
