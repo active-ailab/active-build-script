@@ -1136,6 +1136,12 @@ def resolve_defconfig_paths(project_root, configs_dir, family, project):
     return os.path.basename(defconfig_main), os.path.basename(sensorhub_defconfig)
 
 
+def resolve_sensorhub_target_dir(project_root, family, project):
+    products_root = os.path.join(project_root, "platform", "board", family, "products")
+    product_path = os.path.join(products_root, project)
+    return os.path.join(product_path, "sensorhub")
+
+
 def resolve_sim_defconfig(project_root, family, project):
     sim_candidates = [
         os.path.join(project_root, "configs", "simulator", f"simx86_{project}_defconfig"),
@@ -1350,12 +1356,22 @@ def prepare_sensorhub_config(build_dir, plan, main_defconfig, sensorhub_defconfi
     apply_version_override(build_dir, plan, logger, appdir=SENSORHUB_APPDIR)
 
 
-def build_sensorhub(build_dir, plan, main_defconfig, sensorhub_defconfig, logger=None, clean=False):
+def build_sensorhub(
+    build_dir,
+    project_root,
+    plan,
+    main_defconfig,
+    sensorhub_defconfig,
+    logger=None,
+    clean=False,
+):
     prepare_sensorhub_config(build_dir, plan, main_defconfig, sensorhub_defconfig, logger, clean=clean)
     run_cmd(
         make_cmd(plan, stage="sensorhub", appdir=SENSORHUB_APPDIR, build_dir_var=SENSORHUB_APPDIR),
         logger,
     )
+    sensorhub_target_dir = resolve_sensorhub_target_dir(project_root, plan.family, plan.project)
+    copy_sensorhub_outputs(build_dir, plan.family, sensorhub_target_dir, logger)
 
 
 def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
@@ -1408,6 +1424,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
         elif plan.mode == "sensorhub":
             build_sensorhub(
                 build_dir,
+                project_root,
                 plan,
                 main_defconfig,
                 sensorhub_defconfig,
@@ -1417,6 +1434,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
         elif plan.mode == "sensorhub-firmware":
             build_sensorhub(
                 build_dir,
+                project_root,
                 plan,
                 main_defconfig,
                 sensorhub_defconfig,
@@ -1428,6 +1446,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
         elif plan.mode == "sensorhub-ota":
             build_sensorhub(
                 build_dir,
+                project_root,
                 plan,
                 main_defconfig,
                 sensorhub_defconfig,

@@ -552,10 +552,17 @@ class ActiveBuildCliTest(unittest.TestCase):
 
             self.assertEqual(projects, ["cologne"])
 
-    def test_mhs003s_projects_do_not_require_product_dir(self):
+    def test_projects_do_not_require_product_dir_for_listing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "configs" / "mhs003").mkdir(parents=True)
             (root / "configs" / "mhs003s").mkdir(parents=True)
+            (root / "configs" / "mhs003" / "mhs003_geneva_defconfig").write_text(
+                "# main\n", encoding="utf-8"
+            )
+            (root / "configs" / "mhs003" / "mhs003_geneva_sensorhub_defconfig").write_text(
+                "# sensorhub\n", encoding="utf-8"
+            )
             (root / "configs" / "mhs003s" / "mhs003s_dublin_defconfig").write_text(
                 "# main\n", encoding="utf-8"
             )
@@ -563,7 +570,18 @@ class ActiveBuildCliTest(unittest.TestCase):
                 "# sensorhub\n", encoding="utf-8"
             )
 
-            projects = cli.list_projects(str(root), str(root / "configs"), "mhs003s")
+            mhs003_projects = cli.list_projects(str(root), str(root / "configs"), "mhs003")
+            mhs003s_projects = cli.list_projects(str(root), str(root / "configs"), "mhs003s")
+            main_defconfig, sensorhub_defconfig = cli.resolve_defconfig_paths(
+                str(root),
+                str(root / "configs"),
+                "mhs003",
+                "geneva",
+            )
+            self.assertEqual(mhs003_projects, ["geneva"])
+            self.assertEqual(main_defconfig, "mhs003_geneva_defconfig")
+            self.assertEqual(sensorhub_defconfig, "mhs003_geneva_sensorhub_defconfig")
+
             main_defconfig, sensorhub_defconfig = cli.resolve_defconfig_paths(
                 str(root),
                 str(root / "configs"),
@@ -571,7 +589,7 @@ class ActiveBuildCliTest(unittest.TestCase):
                 "dublin",
             )
 
-            self.assertEqual(projects, ["dublin"])
+            self.assertEqual(mhs003s_projects, ["dublin"])
             self.assertEqual(main_defconfig, "mhs003s_dublin_defconfig")
             self.assertEqual(sensorhub_defconfig, "mhs003s_dublin_sensorhub_defconfig")
 
@@ -743,6 +761,18 @@ class ActiveBuildCliTest(unittest.TestCase):
                 'BOARD_FIRMWARE_VERSION="10.0.0"',
                 (build_dir / ".config").read_text(encoding="utf-8"),
             )
+            self.assertTrue(
+                (
+                    root
+                    / "platform"
+                    / "board"
+                    / "mhs003"
+                    / "products"
+                    / "cologne"
+                    / "sensorhub"
+                    / "sensorhub@mhs003_sign.bin"
+                ).exists()
+            )
             self.assertNotIn(
                 "BOARD_FIRMWARE_VERSION",
                 (build_dir / "out_hub" / ".config").read_text(encoding="utf-8"),
@@ -809,6 +839,115 @@ class ActiveBuildCliTest(unittest.TestCase):
                 "BOARD_FIRMWARE_VERSION",
                 (build_dir / ".config").read_text(encoding="utf-8"),
             )
+
+    def test_run_build_plan_sensorhub_creates_target_dir_for_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            build_dir = root / "build"
+            (root / "platform" / "board" / "mhs003" / "products" / "cologne" / "sensorhub").rmdir()
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+                if "mhs003_cologne_defconfig" in command:
+                    (build_dir / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+                if "mhs003_cologne_sensorhub_defconfig" in command:
+                    (build_dir / "out_hub").mkdir(exist_ok=True)
+                    (build_dir / "out_hub" / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+                if "BUILD_DIR=out_hub" in command and "silentoldconfig" not in command:
+                    out = build_dir / "out_hub" / "sensorhub@mhs003" / "binary"
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "sensorhub@mhs003_sign.bin").write_bytes(b"signed")
+
+            plan = cli.BuildPlan(
+                family="mhs003",
+                project="cologne",
+                mode="sensorhub-ota",
+                threads="8",
+                reload_defconfig=True,
+                version="10.0.0",
+                version_explicit=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "compare_repo_manifest", return_value=True
+            ), mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                cli.run_build_plan(
+                    cli.normalize_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(build_dir),
+                )
+
+            self.assertIn("make BUILD_DIR=out_hub APPDIR=out_hub", commands)
+            self.assertIn("make ota -j8", commands)
+            self.assertTrue(
+                (
+                    root
+                    / "platform"
+                    / "board"
+                    / "mhs003"
+                    / "products"
+                    / "cologne"
+                    / "sensorhub"
+                    / "sensorhub@mhs003_sign.bin"
+                ).exists()
+            )
+
+    def test_run_build_plan_sensorhub_requires_artifact_after_sensorhub_make(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            build_dir = root / "build"
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+                if "mhs003_cologne_defconfig" in command:
+                    (build_dir / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+                if "mhs003_cologne_sensorhub_defconfig" in command:
+                    out = build_dir / "out_hub" / "sensorhub@mhs003" / "binary"
+                    out.mkdir(parents=True, exist_ok=True)
+                    (build_dir / "out_hub" / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+
+            plan = cli.BuildPlan(
+                family="mhs003",
+                project="cologne",
+                mode="sensorhub-ota",
+                threads="8",
+                reload_defconfig=True,
+                version="10.0.0",
+                version_explicit=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "compare_repo_manifest", return_value=True
+            ), mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                with self.assertRaises(SystemExit):
+                    cli.run_build_plan(
+                        cli.normalize_plan(plan),
+                        str(root),
+                        str(root),
+                        str(root / "configs"),
+                        str(build_dir),
+                    )
+
+            self.assertIn("make BUILD_DIR=out_hub APPDIR=out_hub", commands)
+            self.assertNotIn("make ota -j8", commands)
 
     def test_compare_repo_manifest_accepts_repo_generated_include(self):
         with tempfile.TemporaryDirectory() as tmp:
