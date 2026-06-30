@@ -949,6 +949,86 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertIn("make BUILD_DIR=out_hub APPDIR=out_hub", commands)
             self.assertNotIn("make ota -j8", commands)
 
+    def test_post_build_flash_command_by_mode(self):
+        self.assertEqual(cli.post_build_flash_command("firmware"), "v3dl app")
+        self.assertEqual(cli.post_build_flash_command("sensorhub-firmware"), "v3dl app")
+        self.assertEqual(cli.post_build_flash_command("ota"), "v3dl ota")
+        self.assertEqual(cli.post_build_flash_command("sensorhub-ota"), "v3dl ota")
+        self.assertIsNone(cli.post_build_flash_command("sensorhub"))
+        self.assertIsNone(cli.post_build_flash_command("sim"))
+
+    def test_post_build_flash_skips_without_prompt_for_sensorhub_and_sim(self):
+        commands = []
+        for mode in ("sensorhub", "sim"):
+            with mock.patch.object(cli.sys.stdin, "isatty", return_value=True), mock.patch.object(
+                cli, "run_cmd", side_effect=lambda command, logger=None: commands.append(command)
+            ), mock.patch.object(cli, "prompt_yes_no") as prompt:
+                cli.maybe_prompt_post_build_flash(cli.BuildPlan(mode=mode), "/tmp/build")
+                prompt.assert_not_called()
+
+        self.assertEqual(commands, [])
+
+    def test_post_build_flash_decline_runs_v3dl_com_only(self):
+        commands = []
+        plan = cli.BuildPlan(family="mhs003", project="cologne", mode="ota")
+
+        with mock.patch.object(cli.sys.stdin, "isatty", return_value=True), mock.patch.object(
+            cli, "run_cmd", side_effect=lambda command, logger=None: commands.append(command)
+        ), mock.patch.object(cli, "prompt_yes_no", return_value=False) as prompt:
+            cli.maybe_prompt_post_build_flash(plan, "/tmp/build")
+
+        self.assertEqual(commands, [])
+        prompt.assert_called_once()
+
+    def test_post_build_flash_confirm_runs_selected_v3dl_command(self):
+        commands = []
+        plan = cli.BuildPlan(family="mhs003", project="cologne", mode="firmware")
+
+        with mock.patch.object(cli.sys.stdin, "isatty", return_value=True), mock.patch.object(
+            cli, "run_cmd", side_effect=lambda command, logger=None: commands.append(command)
+        ), mock.patch.object(cli, "prompt_yes_no", return_value=True):
+            cli.maybe_prompt_post_build_flash(plan, "/tmp/build")
+
+        self.assertEqual(commands, ["v3dl app"])
+
+    def test_run_build_plan_triggers_post_build_flash_after_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            build_dir = root / "build"
+            commands = []
+
+            def fake_run_cmd(command, logger=None):
+                commands.append(command)
+                if "mhs003_cologne_defconfig" in command:
+                    (build_dir / ".config").write_text(
+                        'HMI_BUILD_BOARD="mhs003"\nHMI_PRODUCT_CUSTOMIZE_DIR="cologne"\n',
+                        encoding="utf-8",
+                    )
+
+            plan = cli.BuildPlan(
+                family="mhs003",
+                project="cologne",
+                mode="ota",
+                threads="8",
+                reload_defconfig=True,
+            )
+
+            with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                cli, "compare_repo_manifest", return_value=True
+            ), mock.patch.object(cli.sys.stdin, "isatty", return_value=True), mock.patch.object(
+                cli, "prompt_yes_no", return_value=True
+            ), mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                cli.run_build_plan(
+                    cli.normalize_plan(plan),
+                    str(root),
+                    str(root),
+                    str(root / "configs"),
+                    str(build_dir),
+                )
+
+            self.assertEqual(commands[-1], "v3dl ota")
+
     def test_compare_repo_manifest_accepts_repo_generated_include(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

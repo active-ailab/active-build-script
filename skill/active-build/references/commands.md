@@ -124,6 +124,8 @@ debug, inspect, release_log, release
 - 在 `build/out_hub/` 下构建 sensorhub
 - family/project 校验只依赖 main defconfig 与 sensorhub defconfig，不强制依赖产品目录
 - 执行 firmware 或 ota 阶段
+- 交互终端中，构建成功后默认进入烧录确认流程；`firmware` / `sensorhub-firmware` 确认后执行 `v3dl app`，`ota` / `sensorhub-ota` 确认后执行 `v3dl ota`
+- `sensorhub` 和 `sim` 构建成功后直接跳过烧录确认；非交互终端也会跳过烧录确认
 
 ## 基于当前配置继续编译
 

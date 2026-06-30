@@ -86,6 +86,12 @@ HELP_TEXT = """\
 
 bstyle:
   bstyle 编译已拆分为独立指令 active-bstyle。
+
+烧录:
+  编译成功后会在交互终端中默认检查是否烧录当前编译产物。
+  firmware / sensorhub-firmware 使用 v3dl app。
+  ota / sensorhub-ota 使用 v3dl ota。
+  sensorhub / sim 默认跳过烧录检查。
 """
 
 
@@ -1374,6 +1380,39 @@ def build_sensorhub(
     copy_sensorhub_outputs(build_dir, plan.family, sensorhub_target_dir, logger)
 
 
+def post_build_flash_command(mode):
+    if mode in {"firmware", "sensorhub-firmware"}:
+        return "v3dl app"
+    if mode in {"ota", "sensorhub-ota"}:
+        return "v3dl ota"
+    return None
+
+
+def maybe_prompt_post_build_flash(plan, build_dir, logger=None):
+    command = post_build_flash_command(plan.mode)
+    if not command:
+        return
+    if not sys.stdin.isatty():
+        print(f"{YELLOW}非交互终端，跳过烧录确认。{RESET}")
+        if logger:
+            logger.line("skip post-build flash: non-interactive stdin")
+        return
+
+    print(f"\n{YELLOW}本次构建:{RESET}")
+    print(f"family: {plan.family}")
+    print(f"project: {plan.project}")
+    print(f"mode: {plan.mode}")
+    print(f"{YELLOW}即将执行烧录命令: cd {build_dir} && {command}{RESET}")
+
+    if not prompt_yes_no("是否继续烧录当前编译产物？", default=False):
+        print(f"{YELLOW}已跳过烧录。{RESET}")
+        if logger:
+            logger.line("skip post-build flash: user declined")
+        return
+
+    run_cmd(command, logger)
+
+
 def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     ensure_python3_default()
     infer_plan_target_from_config(plan, build_dir)
@@ -1461,6 +1500,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
         record_build_state(build_dir, plan)
         remove_legacy_last_threads(project_root)
         success = True
+        maybe_prompt_post_build_flash(plan, build_dir, logger)
     finally:
         total_end = time.time()
         if success:

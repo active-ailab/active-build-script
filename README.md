@@ -169,6 +169,19 @@ active-bstyle -i Foo.style --width 466 --height 466 --pixel-ratio 1.0 --dry-run
 
 成功构建后写入 `build/.active-build-state.json`，记录 `family`、`project`、`threads`、`updated_at`。下次 `-j` 未指定时优先复用其中的线程数。旧的 `.hmbuild_last_threads` 文件在写入新状态后自动清理。
 
+## 编译后烧录确认
+
+交互终端中，固件构建成功后会默认进入烧录确认流程，不需要额外参数。
+
+规则：
+
+- `firmware` / `sensorhub-firmware`：用户确认后在 `build/` 目录执行 `v3dl app`
+- `ota` / `sensorhub-ota`：用户确认后在 `build/` 目录执行 `v3dl ota`
+- `sensorhub` / `sim`：直接跳过烧录确认
+- 非交互终端：跳过烧录确认，避免脚本化构建卡住
+
+确认默认值为 `N`，直接回车不会烧录。
+
 ## Agent 使用注意
 
 本节不是 CLI 自身功能说明，而是给使用本仓库 Skill 的 Agent 的操作约定。

@@ -21,6 +21,8 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 - 若 CLI 在输出中打印了 `>>> 执行:` 的实际命令，需要保留这些命令，便于用户手动复现。
 - 成功或失败后，可通过本地 Lark MCP 发送通知；通知内容只允许简述构建计划与结果，不要发送文件路径、日志路径或大段输出。
 - 多个构建或 bstyle 任务需要先整体确认，再按顺序串行执行。
+- 交互终端中，固件构建成功后 CLI 会默认进入烧录确认流程，由用户确认是否执行当前构建模式对应的 `v3dl app` 或 `v3dl ota`；agent 不需要额外增加烧录参数。
+- `sensorhub` 和 `sim` 构建成功后直接跳过烧录确认；非交互终端也会跳过烧录确认。
 
 ## 静默执行模式
 
@@ -90,6 +92,7 @@ active-build -i <plan-file>
 
 若 BuildPlan 中没有绝对路径 `workspace`，则应在目标工作区内执行；若从其他目录执行，则追加 `-w <workspace>`。
 8. 命令启动后，按“静默执行模式”等待命令结束；仅在命令结束或终止后统一回溯结果。
+9. 如果 CLI 在交互终端中进入编译后烧录确认，只转交用户确认；`firmware` / `sensorhub-firmware` 会执行 `v3dl app`，`ota` / `sensorhub-ota` 会执行 `v3dl ota`，`sensorhub` / `sim` 不触发烧录确认。
 
 bstyle 编译按下面流程执行：
 
