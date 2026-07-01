@@ -41,12 +41,12 @@ from .active_tui import FieldType, MenuItem, MenuSection, TuiPage
 HELP_TEXT = """\
 用法:
   active-bstyle
-  active-bstyle [-i input.style] [-o output.bstyle] [-f family] [-p project] [-w workspace]
+  active-bstyle [-i input.style | -i <dir>] [-o output.bstyle | -o <dir>] [-f family] [-p project] [-w workspace]
 
 核心参数:
   无参数运行时进入交互模式，依次选择 family、project、style 输入文件和输出文件。
-  -i <file>         style 输入文件；不传时仅在当前目录存在唯一 .style 文件时自动推导
-  -o <file>         bstyle 输出文件；不传时自动生成同目录同名 .bstyle
+  -i <file|dir>     style 输入文件或目录；为目录时批量处理目录下所有 .style 文件
+  -o <file|dir>     bstyle 输出文件或目录；-i 为目录时 -o 也必须为目录，默认与 -i 同目录
   -f <family>       family / 芯片目录，例如 mhs003、mhs003s
   -p <project>      项目名称，例如 cologne、geneva、atlas
   -w <path>         指定 workspace 根目录或 build 目录
@@ -61,6 +61,7 @@ HELP_TEXT = """\
 推导规则:
   底层工具从 workspace 下 build/cmd/linux64/bstylenc 或 build/cmd/linux32/bstylenc 查找。
   -w/-h/-p 参数默认从 configs/<family>/<family>_<project>_defconfig 推导。
+  当 -i 传入目录时，批量处理目录下所有 .style 文件，共享同一套 defconfig 参数。
 """
 
 
@@ -387,20 +388,62 @@ def ensure_path_under_workspace(path, project_root, label):
 
 
 def resolve_bstyle_input_output(plan, start_dir, project_root):
+    """Resolve style input(s) and bstyle output(s).
+
+    When plan.input is a directory, collects all .style files inside it
+    and maps each to a same-named .bstyle in plan.output (defaults to the
+    same directory).  When plan.input is a single file, behaviour is
+    unchanged.
+
+    Returns (inputs, outputs) where both are lists of absolute paths.
+    """
+    # -- resolve input path --------------------------------------------------
     if not plan.input:
         plan.input = infer_single_style_input(start_dir)
     else:
         plan.input = resolve_workspace_path(plan.input, project_root)
+
+    # -- batch mode: input is a directory ------------------------------------
+    if os.path.isdir(plan.input):
+        style_files = sorted(
+            os.path.join(plan.input, f)
+            for f in os.listdir(plan.input)
+            if f.endswith(".style") and os.path.isfile(os.path.join(plan.input, f))
+        )
+        if not style_files:
+            fail(f"目录中未找到 .style 文件: {plan.input}")
+
+        # output directory: default to input directory
+        if plan.output:
+            plan.output = resolve_workspace_path(plan.output, project_root)
+        else:
+            plan.output = plan.input
+
+        if not os.path.isdir(plan.output):
+            fail(f"当 -i 为目录时，-o 也必须为目录: {plan.output}")
+        ensure_path_under_workspace(plan.output, project_root, "bstyle 输出目录")
+        os.makedirs(plan.output, exist_ok=True)
+
+        outputs = [
+            os.path.join(plan.output, os.path.splitext(os.path.basename(f))[0] + ".bstyle")
+            for f in style_files
+        ]
+        return style_files, outputs
+
+    # -- single file mode ----------------------------------------------------
     if not plan.input.endswith(".style"):
         fail(f"输入文件必须是 .style: {plan.input}")
     ensure_path_under_workspace(plan.input, project_root, "style 输入文件")
     if not os.path.isfile(plan.input):
         fail(f"style 输入文件不存在: {plan.input}")
+
     if not plan.output:
         plan.output = default_bstyle_output(plan.input)
     else:
         plan.output = resolve_workspace_path(plan.output, project_root)
     ensure_path_under_workspace(plan.output, project_root, "bstyle 输出文件")
+
+    return [plan.input], [plan.output]
 
 
 def parse_bstyle_params_from_defconfig(defconfig_path, plan):
@@ -439,52 +482,62 @@ def resolve_bstylenc_tool(project_root):
     fail("未找到 bstylenc，已检查: " + ", ".join(checked))
 
 
-def make_bstyle_cmd(tool_path, plan):
+def make_bstyle_cmd(tool_path, input_path, output_path, width, height, pixel_ratio):
     return quote_cmd(
         [
             tool_path,
             "-i",
-            plan.input,
+            input_path,
             "-o",
-            plan.output,
+            output_path,
             "-w",
-            plan.width,
+            width,
             "-h",
-            plan.height,
+            height,
             "-p",
-            plan.pixel_ratio,
+            pixel_ratio,
         ]
     )
 
 
 def run_bstyle_plan(plan, start_dir, project_root, configs_dir, build_dir):
     plan = normalize_bstyle_plan(plan)
-    resolve_bstyle_input_output(plan, start_dir, project_root)
+    inputs, outputs = resolve_bstyle_input_output(plan, start_dir, project_root)
     needs_defconfig = plan.width is None or plan.height is None or plan.pixel_ratio is None
     defconfig = None
     if needs_defconfig:
         defconfig = infer_bstyle_target(plan, project_root, configs_dir, build_dir)
         parse_bstyle_params_from_defconfig(defconfig, plan)
     tool_path = resolve_bstylenc_tool(project_root)
-    command = make_bstyle_cmd(tool_path, plan)
     logger = ActiveLogger(build_dir, "active-bstyle", plan.family, plan.project, plan.log)
     success = False
+    is_batch = len(inputs) > 1
 
     try:
         print(f"\n{YELLOW}脚本启动目录: {start_dir}{RESET}")
         print(f"{YELLOW}项目根目录: {project_root}{RESET}")
         if defconfig:
             print(f"{YELLOW}主 defconfig: {defconfig}{RESET}")
+        if is_batch:
+            print(f"{YELLOW}批量模式: 共 {len(inputs)} 个 .style 文件{RESET}")
         print(f"{YELLOW}BstylePlan: {json.dumps(asdict(plan), ensure_ascii=False)}{RESET}")
         if logger.enabled:
             logger.line(f"start: {datetime.now().isoformat(timespec='seconds')}")
             logger.line(f"BstylePlan: {json.dumps(asdict(plan), ensure_ascii=False)}")
-        if plan.dry_run:
-            print(f"{YELLOW}dry-run 命令: {command}{RESET}")
-            if logger.enabled:
-                logger.line(f"dry-run 命令: {command}")
-        else:
-            run_cmd(command, logger)
+
+        for idx, (input_path, output_path) in enumerate(zip(inputs, outputs), 1):
+            if is_batch:
+                print(f"\n{YELLOW}[{idx}/{len(inputs)}] {os.path.basename(input_path)} → {os.path.basename(output_path)}{RESET}")
+
+            command = make_bstyle_cmd(tool_path, input_path, output_path, plan.width, plan.height, plan.pixel_ratio)
+
+            if plan.dry_run:
+                print(f"{YELLOW}dry-run 命令: {command}{RESET}")
+                if logger.enabled:
+                    logger.line(f"dry-run 命令 [{idx}]: {command}")
+            else:
+                run_cmd(command, logger)
+
         success = True
     finally:
         if logger.enabled:
