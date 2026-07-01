@@ -170,6 +170,8 @@ active-bstyle -i ./styles/ -o ./output/ -f mhs003 -p cologne --dry-run
   - pixel_ratio: `HM_FONT_DENSTIY` → `HM_DISPLAY_DENSTIY`
 - `family`/`project` 优先从 `build/.active-build-state.json` 和 `build/.config` 推导
 
+编译成功后，交互终端中会询问是否推送 `.bstyle` 到设备（通过 `wlctl.sh fs push-bstyle` 写入 `SYSTEM/resources/styles/`），默认选否。非交互终端和 `--dry-run` 模式下跳过推送确认。
+
 ## 运行状态
 
 成功构建后写入 `build/.active-build-state.json`，记录 `family`、`project`、`threads`、`updated_at`。下次 `-j` 未指定时优先复用其中的线程数。旧的 `.hmbuild_last_threads` 文件在写入新状态后自动清理。

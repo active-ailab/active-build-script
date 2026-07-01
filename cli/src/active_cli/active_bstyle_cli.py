@@ -58,6 +58,11 @@ HELP_TEXT = """\
   --dry-run         只打印最终 bstylenc 命令，不执行
   -h                显示帮助
 
+推送:
+  编译成功后会在交互终端中询问是否推送 .bstyle 文件到设备。
+  通过 wlctl.sh fs push-bstyle 写入设备 SYSTEM/resources/styles/。
+  非交互终端跳过推送确认；--dry-run 模式不触发推送询问。
+
 推导规则:
   底层工具从 workspace 下 build/cmd/linux64/bstylenc 或 build/cmd/linux32/bstylenc 查找。
   -w/-h/-p 参数默认从 configs/<family>/<family>_<project>_defconfig 推导。
@@ -500,6 +505,65 @@ def make_bstyle_cmd(tool_path, input_path, output_path, width, height, pixel_rat
     )
 
 
+def resolve_wlctl_path():
+    """Find wlctl.sh by walking up from this module's location.
+
+    Directory layout::
+
+        active-lab/
+          active-build-script/cli/src/active_cli/active_bstyle_cli.py  ← __file__
+          device-skills/watchlink-v3/scripts/linux/wlctl.sh
+    """
+    module_dir = os.path.dirname(os.path.realpath(__file__))
+    # active_bstyle_cli.py → active_cli/ → src/ → cli/ → active-build-script/ → active-lab/
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(module_dir)))))
+    wlctl = os.path.join(repo_root, "device-skills", "watchlink-v3", "scripts", "linux", "wlctl.sh")
+    return wlctl if os.path.isfile(wlctl) else None
+
+
+def maybe_prompt_post_bstyle_push(outputs, logger=None):
+    """After successful bstyle compilation, ask whether to push .bstyle files to device.
+
+    Uses wlctl.sh fs push-bstyle to write to SYSTEM/resources/styles/.
+    Skips when:
+      - wlctl.sh is not found
+      - stdin is not a TTY (scripted / CI usage)
+      - user declines the prompt (default: No)
+    """
+    wlctl = resolve_wlctl_path()
+    if not wlctl:
+        print(f"{YELLOW}未找到 wlctl.sh，跳过推送确认。{RESET}")
+        if logger:
+            logger.line("skip post-bstyle push: wlctl.sh not found")
+        return
+
+    if not sys.stdin.isatty():
+        print(f"{YELLOW}非交互终端，跳过推送确认。{RESET}")
+        if logger:
+            logger.line("skip post-bstyle push: non-interactive stdin")
+        return
+
+    if len(outputs) == 1:
+        from_path = outputs[0]
+        display = f"bstyle 文件: {from_path}"
+    else:
+        from_path = os.path.dirname(outputs[0])
+        display = f"bstyle 目录: {from_path} ({len(outputs)} 个文件)"
+
+    print(f"\n{YELLOW}本次编译产物:{RESET}")
+    print(display)
+    print(f"{YELLOW}即将推送至设备 SYSTEM/resources/styles/{RESET}")
+
+    if not prompt_yes_no("是否推送编译产物到设备？", default=False):
+        print(f"{YELLOW}已跳过推送。{RESET}")
+        if logger:
+            logger.line("skip post-bstyle push: user declined")
+        return
+
+    cmd = quote_cmd([wlctl, "fs", "push-bstyle", "--from-path", from_path])
+    run_cmd(cmd, logger)
+
+
 def run_bstyle_plan(plan, start_dir, project_root, configs_dir, build_dir):
     plan = normalize_bstyle_plan(plan)
     inputs, outputs = resolve_bstyle_input_output(plan, start_dir, project_root)
@@ -539,6 +603,8 @@ def run_bstyle_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 run_cmd(command, logger)
 
         success = True
+        if not plan.dry_run:
+            maybe_prompt_post_bstyle_push(outputs, logger)
     finally:
         if logger.enabled:
             status = "finish" if success else "failed"

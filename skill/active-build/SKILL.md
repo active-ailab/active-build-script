@@ -16,7 +16,7 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 - 执行前必须给出将要运行的终端命令。
 - 执行编译前必须先判断当前环境是否具备完全访问权限；若不是完全访问权限，不得直接发起编译。
 - 若当前不是完全访问权限，必须提前告知用户切换权限后再执行，并明确说明在当前权限下继续编译可能失败、可能被沙箱拦截、也可能导致结果不完整或误判。
-- skill 执行编译命令时，默认使用“静默执行模式”，禁止在命令运行期间读取、分析、转述、总结或判断任何过程输出。
+- skill 执行编译命令时，默认使用"静默执行模式"，禁止在命令运行期间读取、分析、转述、总结或判断任何过程输出。
 - 若构建失败或中断，必须返回命令、工作目录、退出码，以及关键错误内容。
 - 若 CLI 在输出中打印了 `>>> 执行:` 的实际命令，需要保留这些命令，便于用户手动复现。
 - 成功或失败后，可通过本地 Lark MCP 发送通知；通知内容只允许简述构建计划与结果，不要发送文件路径、日志路径或大段输出。
@@ -29,14 +29,14 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 触发条件：
 
 - 使用本 skill 发起 `active-build` 编译命令时，默认进入静默执行模式。
-- 用户明确要求“静默执行”“不要过程监控”“不要分析中间日志”“等命令结束后再继续”时，必须严格按本节执行。
+- 用户明确要求"静默执行""不要过程监控""不要分析中间日志""等命令结束后再继续"时，必须严格按本节执行。
 
 执行规则：
 
 - 命令启动后，不要基于过程输出做任何中途反馈、推理、诊断、总结或状态判断。
 - 不要为了观察过程输出而持续读取、流式消费、展开分析或转述日志。
 - 如果执行工具返回仍在运行的 session，只做完成性等待；除非出现交互等待、超时、权限问题或用户主动询问，否则不要解释中间输出。
-- 如果受上层交互规则约束必须发送等待状态，只能简短说明“命令仍在运行，等待结束后统一分析”，不得包含日志解读。
+- 如果受上层交互规则约束必须发送等待状态，只能简短说明"命令仍在运行，等待结束后统一分析"，不得包含日志解读。
 - 命令自然结束、失败、中断或超时后，再一次性读取完整结果，并根据退出码和关键输出给出结论。
 - 最终回复只包含构建结果、命令、工作目录、退出码、关键错误或关键产物信息，以及必要的下一步建议。
 
@@ -79,7 +79,7 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 固件构建按下面流程执行：
 
 1. 解析目标工作区根目录。必须包含 `configs/` 与 `build/`；若用户当前在子目录中，需要向上定位。
-2. 若当前工作区已有编译信息，先按“已有编译信息优先流程”处理。
+2. 若当前工作区已有编译信息，先按"已有编译信息优先流程"处理。
 3. 在需要重新推断时，收集或推断 `family`、`project`、`mode`、build type、版本号、线程数、日志开关、是否延用当前配置。
 4. 为每个编译任务生成一个 BuildPlan JSON。
 5. 将 BuildPlan 展示给用户确认。
@@ -91,7 +91,7 @@ active-build -i <plan-file>
 ```
 
 若 BuildPlan 中没有绝对路径 `workspace`，则应在目标工作区内执行；若从其他目录执行，则追加 `-w <workspace>`。
-8. 命令启动后，按“静默执行模式”等待命令结束；仅在命令结束或终止后统一回溯结果。
+8. 命令启动后，按"静默执行模式"等待命令结束；仅在命令结束或终止后统一回溯结果。
 9. 如果 CLI 在交互终端中进入编译后烧录确认，只转交用户确认；`firmware` / `sensorhub-firmware` 会执行 `v3dl app`，`ota` / `sensorhub-ota` 会执行 `v3dl ota`，`sensorhub` / `sim` 不触发烧录确认。
 
 bstyle 编译按下面流程执行：
@@ -105,11 +105,12 @@ bstyle 编译按下面流程执行：
 
 ```sh
 active-bstyle
-active-bstyle -i <style-file> [-o output.bstyle] [-f family] [-p project] [-w workspace] [--dry-run]
+active-bstyle -i <style-file|dir> [-o output.bstyle|dir] [-f family] [-p project] [-w workspace] [--dry-run]
 ```
 
 7. 无参数模式进入 CLI 自带交互；agent 发起执行时仍优先使用显式参数命令。参数模式不进入交互；推导失败、文件不存在、候选不唯一时让 CLI 直接报错，不要在 agent 侧绕过 CLI 重写推导。
-8. 命令启动后，按“静默执行模式”等待命令结束；仅在命令结束或终止后统一回溯结果。
+8. 命令启动后，按"静默执行模式"等待命令结束；仅在命令结束或终止后统一回溯结果。
+9. 编译成功后，CLI 在交互终端中询问是否推送 `.bstyle` 到设备（通过 `wlctl.sh fs push-bstyle` 写入 `SYSTEM/resources/styles/`）。非交互终端和 `--dry-run` 模式跳过推送确认。
 
 ## BuildPlan 字段
 
@@ -179,7 +180,7 @@ active-bstyle [-i input.style | -i <dir>] [-o output.bstyle | -o <dir>] [-f fami
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量。
 - `use_current_config=true` 在旧工程中仍默认跳过版本覆写；新工程默认或显式版本只影响 OTA 阶段版本参数。
 
-## 用户只说“编译”时
+## 用户只说"编译"时
 
 如果用户只要求编译，没有给 family、project、mode、threads：
 
@@ -230,7 +231,7 @@ configs/<family>/<family>_<project>_sensorhub_defconfig
 - 若用户给了 family，则在该 family 下校验目标 project。
 - 若用户要求使用当前配置继续编译，则设置 `use_current_config: true`，并使用用户指定的 `mode`，例如 `fw`、`ota`、`sensorhub-ota`。
 - 若用户要求 `app`，可使用 `mode: "app"` 或 `mode: "fw"`；CLI 会将其视为 firmware。
-- 若用户提到 debug/release/sim，需要区分“快捷入口”和“最终 mode 配置”。
+- 若用户提到 debug/release/sim，需要区分"快捷入口"和"最终 mode 配置"。
 - BuildPlan 对用户展示和最终确认时，不要把 `debug` 或 `release` 作为最终 `mode` 值，改用明确的实际模式，例如 `sensorhub-ota`。
 - 用户未指定线程数时，agent 生成 BuildPlan 默认使用 `"8"`。
 
