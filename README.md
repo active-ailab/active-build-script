@@ -150,15 +150,20 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 # 交互模式
 active-bstyle
 
-# 命令行
+# 命令行（单文件）
 active-bstyle -i Foo.style -o Foo.bstyle -f mhs003 -p cologne
 active-bstyle -i Foo.style --width 466 --height 466 --pixel-ratio 1.0 --dry-run
+
+# 命令行（批量目录）
+active-bstyle -i ./styles/ -f mhs003 -p cologne
+active-bstyle -i ./styles/ -o ./output/ -f mhs003 -p cologne --dry-run
 ```
 
 参数推导规则：
 
 - `-i` 未指定时，仅当前目录有唯一 `.style` 文件时自动推导
-- `-o` 未指定时，自动生成同目录同名 `.bstyle`
+- `-o` 未指定时，自动生成同目录同名 `.bstyle`；`-i` 为目录时 `-o` 也为目录，默认与 `-i` 同目录
+- 当 `-i` 传入目录时，批量处理目录下所有 `.style` 文件，共享同一套 defconfig 参数
 - `--width`/`--height`/`--pixel-ratio` 未指定时，从 `configs/<family>/<family>_<project>_defconfig` 推导：
   - width: `STORYBOARD_DISPLAY_WIDTH` → `AMOLED_PANEL_WIDTH`
   - height: `STORYBOARD_DISPLAY_HEIGHT` → `AMOLED_PANEL_HEIGHT`

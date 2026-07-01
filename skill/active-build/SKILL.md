@@ -98,7 +98,7 @@ bstyle 编译按下面流程执行：
 
 1. 解析目标工作区根目录。必须包含 `configs/` 与 `build/`；若用户当前在子目录中，需要向上定位。
 2. 收集或推断 `family`、`project`、`input`、`output`、`width`、`height`、`pixel_ratio`。
-3. 生成将要执行的 `active-bstyle` 命令。若 `output` 未指定，应说明会由 `input.style` 自动生成同目录同名 `.bstyle`。
+3. 生成将要执行的 `active-bstyle` 命令。若 `output` 未指定，应说明会由 `input.style` 自动生成同目录同名 `.bstyle`；若 `-i` 为目录，则说明会批量处理目录下所有 `.style` 文件，`-o` 未指定时间默认输出到输入目录。
 4. 将命令展示给用户确认。
 5. 在执行前检查当前是否具备完全访问权限；若不具备，先停止执行并告知用户切换权限及风险。
 6. 确认且权限满足后执行：
@@ -156,7 +156,8 @@ CLI 接收的 BuildPlan 字段如下：
 
 - 参数模式不进入交互；推导失败、文件不存在、候选不唯一时直接报错。
 - `-i` 传给底层 `bstylenc -i`；未配置时，仅当前目录存在唯一 `.style` 文件才自动推导。
-- `-o` 传给底层 `bstylenc -o`；为空时由 `input.style` 生成同目录同名 `.bstyle`。
+- `-o` 传给底层 `bstylenc -o`；为空时由 `input.style` 生成同目录同名 `.bstyle`；`-i` 为目录时 `-o` 也必须为目录，默认与 `-i` 同目录。
+- 当 `-i` 传入目录时，批量处理目录下所有 `.style` 文件，共享同一套 defconfig 参数。
 - `--width`、`--height`、`--pixel-ratio` 未指定时，从 `configs/<family>/<family>_<project>_defconfig` 推导；指定时直接使用输入值。
 - 推导宽高优先读 `STORYBOARD_DISPLAY_WIDTH` / `STORYBOARD_DISPLAY_HEIGHT`，缺失时回退到 `AMOLED_PANEL_WIDTH` / `AMOLED_PANEL_HEIGHT`。
 - 推导 `pixel_ratio` 优先读 `HM_FONT_DENSTIY`，缺失时回退到 `HM_DISPLAY_DENSTIY`。
@@ -167,7 +168,7 @@ CLI 接收的 BuildPlan 字段如下：
 命令行独立入口：
 
 ```sh
-active-bstyle [-i input.style] [-o output.bstyle] [-f family] [-p project] [-w workspace] [--dry-run]
+active-bstyle [-i input.style | -i <dir>] [-o output.bstyle | -o <dir>] [-f family] [-p project] [-w workspace] [--dry-run]
 ```
 
 版本处理位置与触发规则：

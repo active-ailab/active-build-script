@@ -63,9 +63,17 @@ active-bstyle -i ui/Sports/prototype/style/466x466-mdpi/Foo.style
 active-bstyle -f mhs003 -p cologne -i Foo.style -o Foo.bstyle
 active-bstyle -i Foo.style -w /home/zepp/workspace/mod --dry-run
 active-bstyle -i Foo.style --width 466 --height 466 --pixel-ratio 1.0 --dry-run
+
+# 批量目录模式：处理目录下所有 .style 文件
+active-bstyle -i ./styles/ -f mhs003 -p cologne
+active-bstyle -i ./styles/ -o ./output/ -f mhs003 -p cologne
 ```
 
 无参数模式进入 CLI 自带交互；参数模式不进入交互。推导失败、文件不存在或候选不唯一时直接报错。
+
+当 `-i` 传入目录时：
+- 批量处理目录下所有 `.style` 文件，共享同一套 defconfig 参数
+- `-o` 也必须为目录，默认与 `-i` 同目录
 
 底层工具从 workspace 推导：
 
