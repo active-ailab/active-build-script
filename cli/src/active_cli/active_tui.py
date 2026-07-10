@@ -17,6 +17,7 @@ Design principles:
 from __future__ import annotations
 
 import curses
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -540,6 +541,18 @@ class TuiPage:
             item.value = not item.value
         # ACTION is handled at the action bar level
 
+    @staticmethod
+    def _choice_prefix_match(options, prefix, selected, include_current=False):
+        if not prefix:
+            return None
+        prefix = prefix.casefold()
+        start = selected if include_current else (selected + 1) % len(options)
+        for offset in range(len(options)):
+            idx = (start + offset) % len(options)
+            if str(options[idx]).casefold().startswith(prefix):
+                return idx
+        return None
+
     def _popup_choice(self, item):
         state = self._collect_state()
         options = self._effective_options(item, state)
@@ -567,6 +580,9 @@ class TuiPage:
 
         selected = current_idx
         scroll_off = 0
+        search_prefix = ""
+        last_search_at = 0
+        search_timeout = 1.0
 
         while True:
             popup.erase()
@@ -574,6 +590,8 @@ class TuiPage:
 
             # Title — full display, fits because popup_width >= title_dw + 4
             title_text = f" {item.label} "
+            if search_prefix:
+                title_text = f" {item.label} /{search_prefix} "
             try:
                 popup.addstr(0, 2, self._truncate_by_dw(title_text, popup_width - 4),
                              self._attr(2) | curses.A_BOLD)
@@ -611,14 +629,41 @@ class TuiPage:
 
             key = popup.getch()
             if key == curses.KEY_UP:
+                search_prefix = ""
                 selected = (selected - 1) % len(options)
             elif key == curses.KEY_DOWN:
+                search_prefix = ""
                 selected = (selected + 1) % len(options)
             elif key in (curses.KEY_ENTER, 10, 13):
                 item.value = options[selected]
                 return
             elif key == 27:  # Esc
                 return
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                search_prefix = search_prefix[:-1]
+                last_search_at = time.monotonic()
+            elif 0 <= key <= 255:
+                ch = chr(key)
+                if ch.isprintable() and not ch.isspace():
+                    now = time.monotonic()
+                    if now - last_search_at > search_timeout:
+                        search_prefix = ""
+                    candidate_prefix = search_prefix + ch
+                    match_idx = self._choice_prefix_match(
+                        options,
+                        candidate_prefix,
+                        selected,
+                        include_current=len(candidate_prefix) > 1,
+                    )
+                    if match_idx is None and len(candidate_prefix) == 2 and candidate_prefix[0] == ch:
+                        candidate_prefix = ch
+                        match_idx = self._choice_prefix_match(options, candidate_prefix, selected)
+                    if match_idx is not None:
+                        search_prefix = candidate_prefix
+                        selected = match_idx
+                    else:
+                        search_prefix = ""
+                    last_search_at = now
 
     def _popup_message(self, title, message, ok=True):
         lines = [line for line in str(message).splitlines() if line]

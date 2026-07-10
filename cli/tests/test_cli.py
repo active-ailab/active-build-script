@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from active_cli import active_bstyle_cli as bstyle_cli
 from active_cli import active_build_cli as cli
+from active_cli.active_tui import TuiPage
 
 
 def make_workspace(root: Path) -> None:
@@ -61,6 +62,25 @@ def enable_build_fw_ver(root: Path) -> None:
 
 
 class ActiveBuildCliTest(unittest.TestCase):
+    def test_tui_choice_prefix_match_cycles_single_character(self):
+        options = ["atlas", "matrix", "mod", "muse"]
+
+        self.assertEqual(TuiPage._choice_prefix_match(options, "m", 0), 1)
+        self.assertEqual(TuiPage._choice_prefix_match(options, "m", 1), 2)
+        self.assertEqual(TuiPage._choice_prefix_match(options, "m", 3), 1)
+
+    def test_tui_choice_prefix_match_extends_from_current_selection(self):
+        options = ["atlas", "mod", "moscow", "muse"]
+
+        self.assertEqual(
+            TuiPage._choice_prefix_match(options, "mo", 1, include_current=True),
+            1,
+        )
+        self.assertEqual(
+            TuiPage._choice_prefix_match(options, "mos", 1, include_current=True),
+            2,
+        )
+
     def test_probe_python3_default_reports_ok(self):
         result = mock.Mock(returncode=0, stdout="Python 3.8.10\n", stderr="")
         with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/python"):
