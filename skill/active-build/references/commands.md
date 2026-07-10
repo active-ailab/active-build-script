@@ -75,12 +75,13 @@ active-bstyle -i ./styles/ -o ./output/ -f mhs003 -p cologne
 - 批量处理目录下所有 `.style` 文件，共享同一套 defconfig 参数
 - `-o` 也必须为目录，默认与 `-i` 同目录
 
-底层工具从 workspace 推导：
+底层脚本从 workspace 推导，并由 CLI 进入 `build/` 目录调用：
 
 ```text
-build/cmd/linux64/bstylenc
-build/cmd/linux32/bstylenc
+build/scripts/gen_styles.py
 ```
+
+CLI 会把 `-i` / `-o` 解析为绝对路径后传给 `scripts/gen_styles.py`。
 
 宽高和 ppi ratio 从主 defconfig 推导：
 

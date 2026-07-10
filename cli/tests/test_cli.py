@@ -61,6 +61,13 @@ def enable_build_fw_ver(root: Path) -> None:
     (rules_dir / "fw_version.mk").write_text("# test marker\n", encoding="utf-8")
 
 
+def make_gen_styles_script(root: Path) -> Path:
+    script = root / "build" / "scripts" / "gen_styles.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    return script
+
+
 class ActiveBuildCliTest(unittest.TestCase):
     def test_tui_choice_prefix_match_cycles_single_character(self):
         options = ["atlas", "matrix", "mod", "muse"]
@@ -382,9 +389,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             make_workspace(root)
             style = root / "Foo.style"
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
 
             with mock.patch.object(bstyle_cli.platform, "architecture", return_value=("64bit", "")):
                 bstyle_cli.main(
@@ -407,9 +412,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             make_workspace(root)
             style = root / "Foo.style"
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
             commands = []
             inputs = iter(["1", "1", str(style), "n"])
 
@@ -418,12 +421,14 @@ class ActiveBuildCliTest(unittest.TestCase):
             ), mock.patch.object(
                 bstyle_cli.platform, "architecture", return_value=("64bit", "")
             ), mock.patch.object(
-                bstyle_cli, "run_cmd", side_effect=lambda command, logger=None: commands.append(command)
+                bstyle_cli,
+                "run_gen_styles_cmd",
+                side_effect=lambda command, output_path, logger=None: commands.append(command),
             ):
                 bstyle_cli.main([])
 
             self.assertEqual(len(commands), 1)
-            self.assertIn(str(tool), commands[0])
+            self.assertIn("scripts/gen_styles.py", commands[0])
             self.assertIn(str(style), commands[0])
             self.assertIn(str(root / "Foo.bstyle"), commands[0])
 
@@ -433,9 +438,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             make_workspace(root)
             style = root / "Foo.style"
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
             (root / "build" / cli.STATE_FILE).write_text(
                 json.dumps({"family": "mhs003", "project": "cologne"}),
                 encoding="utf-8",
@@ -465,9 +468,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             style = root / "ui" / "Sports" / "prototype" / "style" / "466x466-mdpi" / "Foo.style"
             style.parent.mkdir(parents=True)
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
 
             plan = bstyle_cli.BstylePlan(
                 input="ui/Sports/prototype/style/466x466-mdpi/Foo.style",
@@ -500,9 +501,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             style = other / "ui" / "Sports" / "prototype" / "style" / "466x466-mdpi" / "Foo.style"
             style.parent.mkdir(parents=True)
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
 
             plan = bstyle_cli.BstylePlan(input=str(style), dry_run=True)
 
@@ -521,9 +520,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             make_workspace(root)
             style = root / "Foo.style"
             style.write_text("<style />\n", encoding="utf-8")
-            tool = root / "build" / "cmd" / "linux64" / "bstylenc"
-            tool.parent.mkdir(parents=True)
-            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            script = make_gen_styles_script(root)
             plan = bstyle_cli.BstylePlan(
                 input=str(style),
                 width="320",
@@ -545,30 +542,57 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertIsNone(plan.project)
             self.assertEqual(plan.output, str(root / "Foo.bstyle"))
             self.assertEqual(
-                bstyle_cli.make_bstyle_cmd(
-                    str(tool),
+                bstyle_cli.make_gen_styles_cmd(
+                    str(root / "build"),
+                    str(script),
                     str(style),
                     str(root / "Foo.bstyle"),
                     "320",
                     "380",
                     "1.0",
                 ),
+                "cd {} && {}".format(
+                    bstyle_cli.quote_cmd([str(root / "build")]),
+                    bstyle_cli.quote_cmd(
+                        [
+                            sys.executable,
+                            "scripts/gen_styles.py",
+                            str(style),
+                            str(root / "Foo.bstyle"),
+                            "320",
+                            "380",
+                            "1.0",
+                        ]
+                    ),
+                ),
+            )
+
+    def test_run_gen_styles_cmd_accepts_output_when_script_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "Foo.bstyle"
+            command = "cd /tmp && {} -c {}".format(
+                bstyle_cli.quote_cmd([sys.executable]),
                 bstyle_cli.quote_cmd(
                     [
-                        str(tool),
-                        "-i",
-                        str(style),
-                        "-o",
-                        str(root / "Foo.bstyle"),
-                        "-w",
-                        "320",
-                        "-h",
-                        "380",
-                        "-p",
-                        "1.0",
+                        "from pathlib import Path; import sys; "
+                        f"Path({str(output)!r}).write_text('ok'); sys.exit(1)"
                     ]
                 ),
             )
+            bstyle_cli.run_gen_styles_cmd(command, str(output))
+            self.assertTrue(output.is_file())
+
+    def test_run_gen_styles_cmd_rejects_stale_output_when_script_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "Foo.bstyle"
+            output.write_text("old", encoding="utf-8")
+            command = "cd /tmp && {} -c {}".format(
+                bstyle_cli.quote_cmd([sys.executable]),
+                bstyle_cli.quote_cmd(["import sys; sys.exit(1)"]),
+            )
+
+            with self.assertRaises(SystemExit):
+                bstyle_cli.run_gen_styles_cmd(command, str(output))
 
     def test_list_projects_filters_derived_configs(self):
         with tempfile.TemporaryDirectory() as tmp:

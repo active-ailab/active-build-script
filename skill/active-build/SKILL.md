@@ -156,14 +156,15 @@ CLI 接收的 BuildPlan 字段如下：
 `active-bstyle` 是独立命令，不会串入任何固件编译流程。规则：
 
 - 参数模式不进入交互；推导失败、文件不存在、候选不唯一时直接报错。
-- `-i` 传给底层 `bstylenc -i`；未配置时，仅当前目录存在唯一 `.style` 文件才自动推导。
-- `-o` 传给底层 `bstylenc -o`；为空时由 `input.style` 生成同目录同名 `.bstyle`；`-i` 为目录时 `-o` 也必须为目录，默认与 `-i` 同目录。
+- `-i` 传给底层 `build/scripts/gen_styles.py` 的 input style；未配置时，仅当前目录存在唯一 `.style` 文件才自动推导。
+- `-o` 传给底层 `build/scripts/gen_styles.py` 的 output bstyle；为空时由 `input.style` 生成同目录同名 `.bstyle`；`-i` 为目录时 `-o` 也必须为目录，默认与 `-i` 同目录。
+- CLI 必须进入 workspace 的 `build/` 目录调用 `scripts/gen_styles.py`，并把传入与传出路径转换成绝对路径后传给脚本。
 - 当 `-i` 传入目录时，批量处理目录下所有 `.style` 文件，共享同一套 defconfig 参数。
 - `--width`、`--height`、`--pixel-ratio` 未指定时，从 `configs/<family>/<family>_<project>_defconfig` 推导；指定时直接使用输入值。
 - 推导宽高优先读 `STORYBOARD_DISPLAY_WIDTH` / `STORYBOARD_DISPLAY_HEIGHT`，缺失时回退到 `AMOLED_PANEL_WIDTH` / `AMOLED_PANEL_HEIGHT`。
 - 推导 `pixel_ratio` 优先读 `HM_FONT_DENSTIY`，缺失时回退到 `HM_DISPLAY_DENSTIY`。
 - `family`、`project` 可省略；需要读取 defconfig 时，优先从 `build/.active-build-state.json` 和 `build/.config` 推导，失败则报错。
-- 底层工具只从 workspace 下 `build/cmd/linux64/bstylenc` 或 `build/cmd/linux32/bstylenc` 推导。
+- 底层脚本只从 workspace 下 `build/scripts/gen_styles.py` 推导。
 - `--dry-run` 只打印最终命令，不执行。
 
 命令行独立入口：

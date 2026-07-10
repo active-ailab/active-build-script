@@ -6,7 +6,9 @@ import curses
 import json
 import os
 import platform
+import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
@@ -50,12 +52,12 @@ HELP_TEXT = """\
   -f <family>       family / 芯片目录，例如 mhs003、mhs003s
   -p <project>      项目名称，例如 cologne、geneva、atlas
   -w <path>         指定 workspace 根目录或 build 目录
-  --width <value>   直接指定底层 bstylenc -w
-  --height <value>  直接指定底层 bstylenc -h
+  --width <value>   直接指定 gen_styles.py 单文件模式 width
+  --height <value>  直接指定 gen_styles.py 单文件模式 height
   --pixel-ratio <value>
-                    直接指定底层 bstylenc -p
+                    直接指定 gen_styles.py 单文件模式 ppi-ratio
   -l                写入日志
-  --dry-run         只打印最终 bstylenc 命令，不执行
+  --dry-run         只打印最终 gen_styles.py 命令，不执行
   -h                显示帮助
 
 推送:
@@ -64,7 +66,7 @@ HELP_TEXT = """\
   非交互终端跳过推送确认；--dry-run 模式不触发推送询问。
 
 推导规则:
-  底层工具从 workspace 下 build/cmd/linux64/bstylenc 或 build/cmd/linux32/bstylenc 查找。
+  底层通过 workspace 下 build/scripts/gen_styles.py 生成，并在 build 目录下执行。
   -w/-h/-p 参数默认从 configs/<family>/<family>_<project>_defconfig 推导。
   当 -i 传入目录时，批量处理目录下所有 .style 文件，共享同一套 defconfig 参数。
 """
@@ -473,36 +475,86 @@ def parse_bstyle_params_from_defconfig(defconfig_path, plan):
     normalize_bstyle_plan(plan)
 
 
-def resolve_bstylenc_tool(project_root):
-    arch = platform.architecture()[0]
-    preferred = "linux64" if arch == "64bit" else "linux32"
-    fallback = "linux32" if preferred == "linux64" else "linux64"
-    checked = [
-        os.path.join(project_root, "build", "cmd", preferred, "bstylenc"),
-        os.path.join(project_root, "build", "cmd", fallback, "bstylenc"),
-    ]
-    for path in checked:
-        if os.path.isfile(path):
-            return path
-    fail("未找到 bstylenc，已检查: " + ", ".join(checked))
+def resolve_gen_styles_script(project_root):
+    script_path = os.path.join(project_root, "build", "scripts", "gen_styles.py")
+    if os.path.isfile(script_path):
+        return script_path
+    fail(f"未找到 gen_styles.py: {script_path}")
 
 
-def make_bstyle_cmd(tool_path, input_path, output_path, width, height, pixel_ratio):
-    return quote_cmd(
-        [
-            tool_path,
-            "-i",
-            input_path,
-            "-o",
-            output_path,
-            "-w",
-            width,
-            "-h",
-            height,
-            "-p",
-            pixel_ratio,
-        ]
+def make_gen_styles_cmd(build_dir, script_path, input_path, output_path, width, height, pixel_ratio):
+    relative_script = os.path.relpath(script_path, build_dir)
+    return "cd {} && {}".format(
+        quote_cmd([build_dir]),
+        quote_cmd(
+            [
+                sys.executable,
+                relative_script,
+                os.path.abspath(input_path),
+                os.path.abspath(output_path),
+                width,
+                height,
+                pixel_ratio,
+            ]
+        ),
     )
+
+
+def run_gen_styles_cmd(cmd, output_path, logger=None):
+    print(f"\n{YELLOW}>>> 执行: {cmd}{RESET}")
+    if logger:
+        logger.line(f">>> 执行: {cmd}")
+    start_step = time.time()
+    before_output = None
+    if os.path.isfile(output_path):
+        stat = os.stat(output_path)
+        before_output = (stat.st_mtime_ns, stat.st_size)
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        if process.stdout:
+            for line in process.stdout:
+                print(line, end="")
+                if logger and logger.enabled:
+                    logger.write(line)
+        returncode = process.wait()
+    finally:
+        if process.stdout:
+            process.stdout.close()
+    end_step = time.time()
+
+    if returncode != 0:
+        output_changed = False
+        if os.path.isfile(output_path):
+            stat = os.stat(output_path)
+            after_output = (stat.st_mtime_ns, stat.st_size)
+            output_changed = before_output is None or after_output != before_output
+        if output_changed:
+            message = (
+                f"gen_styles.py 返回码 {returncode}，但输出文件已生成，"
+                f"按兼容逻辑继续: {output_path}"
+            )
+            print(f"{YELLOW}{message}{RESET}")
+            if logger:
+                logger.line(message)
+            return
+        print(f"\n{RED}命令执行失败: {cmd}{RESET}")
+        print(f"{YELLOW}耗时: {end_step - start_step:.2f} 秒{RESET}")
+        if logger:
+            logger.line(f"命令执行失败: {cmd}")
+            logger.line(f"耗时: {end_step - start_step:.2f} 秒")
+        sys.exit(returncode)
+
+    print(f"{GREEN}完成: {cmd} (耗时 {end_step - start_step:.2f} 秒){RESET}")
+    if logger:
+        logger.line(f"完成: {cmd} (耗时 {end_step - start_step:.2f} 秒)")
 
 
 def resolve_wlctl_path():
@@ -572,7 +624,7 @@ def run_bstyle_plan(plan, start_dir, project_root, configs_dir, build_dir):
     if needs_defconfig:
         defconfig = infer_bstyle_target(plan, project_root, configs_dir, build_dir)
         parse_bstyle_params_from_defconfig(defconfig, plan)
-    tool_path = resolve_bstylenc_tool(project_root)
+    script_path = resolve_gen_styles_script(project_root)
     logger = ActiveLogger(build_dir, "active-bstyle", plan.family, plan.project, plan.log)
     success = False
     is_batch = len(inputs) > 1
@@ -593,14 +645,22 @@ def run_bstyle_plan(plan, start_dir, project_root, configs_dir, build_dir):
             if is_batch:
                 print(f"\n{YELLOW}[{idx}/{len(inputs)}] {os.path.basename(input_path)} → {os.path.basename(output_path)}{RESET}")
 
-            command = make_bstyle_cmd(tool_path, input_path, output_path, plan.width, plan.height, plan.pixel_ratio)
+            command = make_gen_styles_cmd(
+                build_dir,
+                script_path,
+                input_path,
+                output_path,
+                plan.width,
+                plan.height,
+                plan.pixel_ratio,
+            )
 
             if plan.dry_run:
                 print(f"{YELLOW}dry-run 命令: {command}{RESET}")
                 if logger.enabled:
                     logger.line(f"dry-run 命令 [{idx}]: {command}")
             else:
-                run_cmd(command, logger)
+                run_gen_styles_cmd(command, output_path, logger)
 
         success = True
         if not plan.dry_run:

@@ -144,7 +144,8 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 
 ## active-bstyle
 
-独立的 `.style` → `.bstyle` 编译命令，调用工作区内 `build/cmd/linux64/bstylenc`（或 `linux32`）。
+独立的 `.style` → `.bstyle` 编译命令，调用工作区内 `build/scripts/gen_styles.py`。
+CLI 会进入 workspace 的 `build/` 目录执行脚本，并把 `-i` / `-o` 解析为绝对路径后传给脚本。
 
 ```sh
 # 交互模式
