@@ -370,6 +370,7 @@ def build_arg_parser():
     parser.add_argument("-a", "-A", dest="main_build_type")
     parser.add_argument("-u", "-U", dest="sensorhub_build_type")
     parser.add_argument("-l", "-L", dest="log", action="store_true")
+    parser.add_argument("-e", "-E", dest="monitor_elf_link", action="store_true")
     parser.add_argument("-h", "-H", "--help", dest="help", action="store_true")
     parser.add_argument("legacy_args", nargs="*")
     return parser
@@ -450,6 +451,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
         if any(mixed):
             fail("-i <plan-file> 不能和 -f/-p/-m/-c/-d/-v/-b/-a/-u/-l 混用")
         plan = plan_from_json(args.plan_file, cwd)
+        setattr(plan, "_monitor_elf_link", args.monitor_elf_link)
         if args.workspace:
             workspace = os.path.abspath(os.path.join(cwd, args.workspace))
             if plan.workspace and os.path.abspath(plan.workspace) != workspace:
@@ -477,6 +479,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
             workspace=args.workspace,
             log=args.log,
         )
+        setattr(plan, "_monitor_elf_link", args.monitor_elf_link)
         return normalize_plan(plan)
 
     if not args.family or not args.project or not args.mode:
@@ -497,6 +500,7 @@ def parse_args_or_prompt(project_root=None, configs_dir=None, argv=None, cwd=Non
         workspace=args.workspace,
         log=args.log,
     )
+    setattr(plan, "_monitor_elf_link", args.monitor_elf_link)
     return normalize_plan(plan)
 
 
@@ -1242,6 +1246,15 @@ def make_cmd(plan, target=None, stage=None, appdir=None, build_dir_var=None, thr
     return quote_cmd(parts)
 
 
+def run_main_cmd(cmd, plan, logger=None):
+    try:
+        run_cmd(cmd, logger, monitor_elf_link_enabled=getattr(plan, "_monitor_elf_link", False))
+    except TypeError as error:
+        if "monitor_elf_link_enabled" not in str(error):
+            raise
+        run_cmd(cmd, logger)
+
+
 def patch_config_version(config_path, version):
     if not os.path.exists(config_path):
         fail(f"Config 不存在，无法覆写版本: {config_path}")
@@ -1453,13 +1466,13 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 make_cmd(plan, main_defconfig, stage="main") + f" BUILD_SIM={shlex.quote(sim_defconfig)}",
                 logger,
             )
-            run_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), logger)
+            run_main_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), plan, logger)
         elif plan.mode == "firmware":
             prepare_main_config(build_dir, plan, main_defconfig, logger, clean=plan.reload_defconfig)
-            run_cmd(make_cmd(plan, stage="main", threads=plan.threads), logger)
+            run_main_cmd(make_cmd(plan, stage="main", threads=plan.threads), plan, logger)
         elif plan.mode == "ota":
             prepare_main_config(build_dir, plan, main_defconfig, logger, clean=plan.reload_defconfig)
-            run_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), logger)
+            run_main_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), plan, logger)
         elif plan.mode == "sensorhub":
             build_sensorhub(
                 build_dir,
@@ -1481,7 +1494,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 clean=plan.reload_defconfig,
             )
             apply_version_override(build_dir, plan, logger)
-            run_cmd(make_cmd(plan, stage="main", threads=plan.threads), logger)
+            run_main_cmd(make_cmd(plan, stage="main", threads=plan.threads), plan, logger)
         elif plan.mode == "sensorhub-ota":
             build_sensorhub(
                 build_dir,
@@ -1493,7 +1506,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
                 clean=plan.reload_defconfig,
             )
             apply_version_override(build_dir, plan, logger)
-            run_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), logger)
+            run_main_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), plan, logger)
         else:
             fail(f"未实现的构建模式: {plan.mode}")
 

@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -73,28 +74,173 @@ def fail(message, code=1):
     sys.exit(code)
 
 
-def run_cmd(cmd, logger=None):
+def should_monitor_elf_link(cmd):
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not parts or os.path.basename(parts[0]) != "make":
+        return False
+    if any(part.startswith(("APPDIR=", "BUILD_DIR=")) for part in parts[1:]):
+        return False
+    targets = [part for part in parts[1:] if not part.startswith("-") and "=" not in part]
+    return not targets or "ota" in targets
+
+
+def read_proc_text(path):
+    try:
+        with open(path, "rb") as file:
+            return file.read()
+    except OSError:
+        return b""
+
+
+def find_watch_elf_ld_pid():
+    proc_root = "/proc"
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return None
+
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        comm = read_proc_text(os.path.join(proc_root, entry, "comm")).decode(
+            "utf-8", errors="ignore"
+        ).strip()
+        if comm != "ld":
+            continue
+        cmdline = read_proc_text(os.path.join(proc_root, entry, "cmdline")).replace(
+            b"\0", b" "
+        ).decode("utf-8", errors="ignore")
+        if "/binary/watch@" in cmdline and ".elf" in cmdline:
+            return entry
+    return None
+
+
+def proc_status_value(pid, key):
+    status = read_proc_text(os.path.join("/proc", str(pid), "status")).decode(
+        "utf-8", errors="ignore"
+    )
+    for line in status.splitlines():
+        if line.startswith(f"{key}:"):
+            return line.split(":", 1)[1].strip()
+    return "-"
+
+
+def proc_io_values(pid):
+    values = {}
+    text = read_proc_text(os.path.join("/proc", str(pid), "io")).decode(
+        "utf-8", errors="ignore"
+    )
+    for line in text.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def proc_stat_fields(pid):
+    stat = read_proc_text(os.path.join("/proc", str(pid), "stat")).decode(
+        "utf-8", errors="ignore"
+    )
+    if not stat:
+        return "-", "-"
+    end_comm = stat.rfind(")")
+    fields = stat[end_comm + 2 :].split()
+    if len(fields) < 33:
+        return "-", "-"
+    state = fields[0]
+    wchan = fields[32]
+    return state, wchan
+
+
+def print_elf_link_snapshot(pid, logger=None):
+    state, wchan = proc_stat_fields(pid)
+    io_values = proc_io_values(pid)
+    lines = [
+        f"{YELLOW}[elf-link] pid={pid} state={state} wchan={wchan}{RESET}",
+        (
+            "[elf-link] "
+            f"VmRSS={proc_status_value(pid, 'VmRSS')} "
+            f"VmHWM={proc_status_value(pid, 'VmHWM')} "
+            f"Threads={proc_status_value(pid, 'Threads')}"
+        ),
+        (
+            "[elf-link] "
+            f"read_bytes={io_values.get('read_bytes', '-')} "
+            f"write_bytes={io_values.get('write_bytes', '-')} "
+            f"syscr={io_values.get('syscr', '-')} "
+            f"syscw={io_values.get('syscw', '-')}"
+        ),
+        (
+            "[elf-link] "
+            f"voluntary_ctxt_switches={proc_status_value(pid, 'voluntary_ctxt_switches')} "
+            f"nonvoluntary_ctxt_switches={proc_status_value(pid, 'nonvoluntary_ctxt_switches')}"
+        ),
+    ]
+    for line in lines:
+        print(line)
+        if logger:
+            logger.line(line)
+
+
+def monitor_elf_link(stop_event, logger=None, interval=3):
+    active_pid = None
+    while not stop_event.is_set():
+        pid = find_watch_elf_ld_pid()
+        if pid:
+            if pid != active_pid:
+                active_pid = pid
+                line = f"{YELLOW}[elf-link] detected watch ELF linker pid={pid}{RESET}"
+                print(line)
+                if logger:
+                    logger.line(line)
+            print_elf_link_snapshot(pid, logger)
+        elif active_pid:
+            line = f"{GREEN}[elf-link] linker pid={active_pid} finished{RESET}"
+            print(line)
+            if logger:
+                logger.line(line)
+            return
+        stop_event.wait(interval)
+
+
+def run_cmd(cmd, logger=None, monitor_elf_link_enabled=False):
     print(f"\n{YELLOW}>>> 执行: {cmd}{RESET}")
     if logger:
         logger.line(f">>> 执行: {cmd}")
     start_step = time.time()
 
-    if logger and logger.enabled:
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+    stop_monitor = threading.Event()
+    monitor_thread = None
+    if monitor_elf_link_enabled and should_monitor_elf_link(cmd):
+        monitor_thread = threading.Thread(
+            target=monitor_elf_link,
+            args=(stop_monitor, logger),
+            daemon=True,
         )
-        for line in process.stdout:
-            print(line, end="")
-            logger.write(line)
+        monitor_thread.start()
+
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        if process.stdout:
+            for line in process.stdout:
+                print(line, end="")
+                if logger and logger.enabled:
+                    logger.write(line)
         returncode = process.wait()
-    else:
-        result = subprocess.run(cmd, shell=True)
-        returncode = result.returncode
+    finally:
+        stop_monitor.set()
+        if monitor_thread:
+            monitor_thread.join(timeout=1)
 
     end_step = time.time()
     if returncode != 0:
