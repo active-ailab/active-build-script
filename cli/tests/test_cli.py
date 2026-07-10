@@ -545,7 +545,14 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertIsNone(plan.project)
             self.assertEqual(plan.output, str(root / "Foo.bstyle"))
             self.assertEqual(
-                bstyle_cli.make_bstyle_cmd(str(tool), plan),
+                bstyle_cli.make_bstyle_cmd(
+                    str(tool),
+                    str(style),
+                    str(root / "Foo.bstyle"),
+                    "320",
+                    "380",
+                    "1.0",
+                ),
                 bstyle_cli.quote_cmd(
                     [
                         str(tool),
