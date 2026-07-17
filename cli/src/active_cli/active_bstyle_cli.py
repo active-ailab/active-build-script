@@ -567,8 +567,8 @@ def resolve_wlctl_path():
           device-skills/watchlink-v3/scripts/linux/wlctl.sh
     """
     module_dir = os.path.dirname(os.path.realpath(__file__))
-    # active_bstyle_cli.py → active_cli/ → src/ → cli/ → active-build-script/ → active-lab/
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(module_dir)))))
+    # active_cli/ → src/ → cli/ → active-build-script/ → active-lab/
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(module_dir))))
     wlctl = os.path.join(repo_root, "device-skills", "watchlink-v3", "scripts", "linux", "wlctl.sh")
     return wlctl if os.path.isfile(wlctl) else None
 
