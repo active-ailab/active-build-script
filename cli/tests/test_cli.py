@@ -644,6 +644,27 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(main_defconfig, "mhs003s_dublin_defconfig")
             self.assertEqual(sensorhub_defconfig, "mhs003s_dublin_sensorhub_defconfig")
 
+    def test_milan_64m_defconfig_is_exposed_as_logical_milan_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            family = "mhs003"
+            family_dir = root / "configs" / family
+            family_dir.mkdir(parents=True)
+            (family_dir / f"{family}_milan_64m_defconfig").write_text("# main\n", encoding="utf-8")
+            (family_dir / f"{family}_milan_64m_sensorhub_defconfig").write_text(
+                "# sensorhub\n", encoding="utf-8"
+            )
+
+            self.assertEqual(cli.list_projects(str(root), str(root / "configs"), family), ["milan"])
+            self.assertEqual(
+                cli.resolve_defconfig_paths(str(root), str(root / "configs"), family, "milan"),
+                (f"{family}_milan_64m_defconfig", f"{family}_milan_64m_sensorhub_defconfig"),
+            )
+            self.assertEqual(cli.logical_project_name("milan_64m"), "milan")
+            self.assertEqual(cli.logical_project_name("milan_custom"), "milan")
+            self.assertEqual(cli.logical_project_name("pamir_64m"), "pamir")
+            self.assertEqual(cli.logical_project_name("atlas_64m"), "atlas_64m")
+
     def test_find_available_families_only_exposes_enabled_chips(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

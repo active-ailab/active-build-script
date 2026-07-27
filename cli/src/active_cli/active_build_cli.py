@@ -36,6 +36,8 @@ from .active_common import (
     prompt_yes_no,
     quote_cmd,
     read_config_value,
+    defconfig_project_candidates,
+    logical_project_name,
     run_cmd,
     is_back,
 )
@@ -1134,16 +1136,33 @@ def compare_repo_manifest(project_root, project):
 
 
 def resolve_defconfig_paths(project_root, configs_dir, family, project):
-    defconfig_main = os.path.join(configs_dir, family, f"{family}_{project}_defconfig")
-    sensorhub_defconfig = os.path.join(
-        configs_dir, family, f"{family}_{project}_sensorhub_defconfig"
-    )
-    if not os.path.exists(defconfig_main):
-        fail(f"主 defconfig 不存在: {defconfig_main}")
-    if not os.path.exists(sensorhub_defconfig):
-        fail(f"未找到 sensorhub defconfig: {sensorhub_defconfig}")
+    candidates = defconfig_project_candidates(project)
+    for defconfig_project in candidates:
+        defconfig_main = os.path.join(
+            configs_dir, family, f"{family}_{defconfig_project}_defconfig"
+        )
+        sensorhub_defconfig = os.path.join(
+            configs_dir, family, f"{family}_{defconfig_project}_sensorhub_defconfig"
+        )
+        if os.path.exists(defconfig_main) and os.path.exists(sensorhub_defconfig):
+            return os.path.basename(defconfig_main), os.path.basename(sensorhub_defconfig)
 
-    return os.path.basename(defconfig_main), os.path.basename(sensorhub_defconfig)
+    logical_project = logical_project_name(project)
+    if logical_project in {"milan", "pamir"}:
+        family_dir = os.path.join(configs_dir, family)
+        prefix = f"{family}_{logical_project}_"
+        for name in sorted(os.listdir(family_dir)):
+            if not name.startswith(prefix) or not name.endswith("_defconfig"):
+                continue
+            sensorhub_name = name[:-len("_defconfig")] + "_sensorhub_defconfig"
+            if os.path.exists(os.path.join(family_dir, sensorhub_name)):
+                return name, sensorhub_name
+
+    first = candidates[0]
+    fail(
+        f"未找到 {project} 对应的主/sensorhub defconfig: "
+        f"{family}_{first}_defconfig"
+    )
 
 
 def resolve_sensorhub_target_dir(project_root, family, project):
@@ -1438,6 +1457,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     main_defconfig, sensorhub_defconfig = resolve_defconfig_paths(
         project_root, configs_dir, plan.family, plan.project
     )
+    plan.project = logical_project_name(plan.project)
 
     check_project_switch_requires_reload(build_dir, plan)
     logger = BuildLogger(build_dir, plan.family, plan.project, plan.log)
