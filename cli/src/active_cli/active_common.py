@@ -28,7 +28,7 @@ DERIVED_SUFFIXES = {
     "ota",
 }
 MHS003_ALLOWED_VARIANT_SUFFIXES = {"2pd", "64m"}
-DEFCONFIG_ONLY_PROJECT_BASES = {"milan", "pamir"}
+XML_PROJECT_BASES = {"milan", "pamir"}
 
 
 class ActiveLogger:
@@ -352,36 +352,17 @@ def locate_project_root(start_dir=None, workspace=None):
 def find_main_defconfig(configs_dir, family, project):
     if not family or not project:
         return None
-    family_dir = os.path.join(configs_dir, family)
-    for defconfig_project in defconfig_project_candidates(project):
-        path = os.path.join(family_dir, f"{family}_{defconfig_project}_defconfig")
-        if os.path.exists(path):
-            return path
-    logical_project = logical_project_name(project)
-    if logical_project in DEFCONFIG_ONLY_PROJECT_BASES:
-        prefix = f"{family}_{logical_project}_"
-        for name in sorted(os.listdir(family_dir)):
-            if name.startswith(prefix) and name.endswith("_defconfig"):
-                path = os.path.join(family_dir, name)
-                if os.path.exists(path):
-                    return path
-    return None
+    path = os.path.join(configs_dir, family, f"{family}_{project}_defconfig")
+    return path if os.path.exists(path) else None
 
 
 def logical_project_name(project):
+    """Resolve the project name used by XML files only."""
     if "_" in project:
         base_project = project.split("_", 1)[0]
-        if base_project in DEFCONFIG_ONLY_PROJECT_BASES:
+        if base_project in XML_PROJECT_BASES:
             return base_project
     return project
-
-
-def defconfig_project_candidates(project):
-    logical_project = logical_project_name(project)
-    candidates = [project]
-    if logical_project != project:
-        candidates.append(logical_project)
-    return list(dict.fromkeys(candidates))
 
 
 def find_available_families(configs_dir):
@@ -406,8 +387,7 @@ def list_projects(project_root, configs_dir, family):
     for name in sorted(os.listdir(family_dir)):
         if not name.startswith(prefix) or not name.endswith(suffix):
             continue
-        defconfig_project = name[len(prefix) : -len(suffix)]
-        project = logical_project_name(defconfig_project)
+        project = name[len(prefix) : -len(suffix)]
         if not project or project.split("_")[-1] in DERIVED_SUFFIXES:
             continue
         if family == "mhs003":
@@ -415,7 +395,7 @@ def list_projects(project_root, configs_dir, family):
             if len(parts) > 1 and parts[-1] not in MHS003_ALLOWED_VARIANT_SUFFIXES:
                 continue
         sensorhub_defconfig = os.path.join(
-            family_dir, f"{family}_{defconfig_project}_sensorhub_defconfig"
+            family_dir, f"{family}_{project}_sensorhub_defconfig"
         )
         if not os.path.exists(sensorhub_defconfig):
             continue

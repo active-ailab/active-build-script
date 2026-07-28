@@ -644,7 +644,7 @@ class ActiveBuildCliTest(unittest.TestCase):
             self.assertEqual(main_defconfig, "mhs003s_dublin_defconfig")
             self.assertEqual(sensorhub_defconfig, "mhs003s_dublin_sensorhub_defconfig")
 
-    def test_milan_64m_defconfig_is_exposed_as_logical_milan_project(self):
+    def test_defconfig_variant_is_not_resolved_to_base_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             family = "mhs003"
@@ -655,15 +655,31 @@ class ActiveBuildCliTest(unittest.TestCase):
                 "# sensorhub\n", encoding="utf-8"
             )
 
-            self.assertEqual(cli.list_projects(str(root), str(root / "configs"), family), ["milan"])
+            self.assertEqual(cli.list_projects(str(root), str(root / "configs"), family), ["milan_64m"])
+
+    def test_sensorhub_target_falls_back_to_base_project_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base_product = root / "platform" / "board" / "mhs003" / "products" / "milan"
+            base_product.mkdir(parents=True)
+
             self.assertEqual(
-                cli.resolve_defconfig_paths(str(root), str(root / "configs"), family, "milan"),
-                (f"{family}_milan_64m_defconfig", f"{family}_milan_64m_sensorhub_defconfig"),
+                cli.resolve_sensorhub_target_dir(str(root), "mhs003", "milan_64m"),
+                str(base_product / "sensorhub"),
             )
-            self.assertEqual(cli.logical_project_name("milan_64m"), "milan")
-            self.assertEqual(cli.logical_project_name("milan_custom"), "milan")
-            self.assertEqual(cli.logical_project_name("pamir_64m"), "pamir")
-            self.assertEqual(cli.logical_project_name("atlas_64m"), "atlas_64m")
+
+    def test_sensorhub_target_prefers_exact_project_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            products = root / "platform" / "board" / "mhs003" / "products"
+            exact_product = products / "milan_64m"
+            exact_product.mkdir(parents=True)
+            (products / "milan").mkdir()
+
+            self.assertEqual(
+                cli.resolve_sensorhub_target_dir(str(root), "mhs003", "milan_64m"),
+                str(exact_product / "sensorhub"),
+            )
 
     def test_find_available_families_only_exposes_enabled_chips(self):
         with tempfile.TemporaryDirectory() as tmp:

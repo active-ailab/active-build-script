@@ -35,7 +35,6 @@ from .active_common import (
     prompt_yes_no,
     quote_cmd,
     read_config_value,
-    logical_project_name,
     run_cmd,
 )
 from .active_tui import FieldType, MenuItem, MenuSection, TuiPage
@@ -343,8 +342,6 @@ def infer_bstyle_target(plan, project_root, configs_dir, build_dir):
         plan.project = state.get("project") or config_project
     if not plan.project:
         fail("无法推导 project，请使用 -p <project>")
-    plan.project = logical_project_name(plan.project)
-
     if not plan.family:
         state_family = state.get("family") if state.get("project") == plan.project else None
         current_family = config_family if config_project == plan.project else None

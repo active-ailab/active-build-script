@@ -30,14 +30,13 @@ from .active_common import (
     load_build_state,
     locate_project_root,
     list_projects,
+    logical_project_name,
     normalize_bool,
     prompt_choice,
     prompt_family_project,
     prompt_yes_no,
     quote_cmd,
     read_config_value,
-    defconfig_project_candidates,
-    logical_project_name,
     run_cmd,
     is_back,
 )
@@ -997,6 +996,7 @@ class ManifestStatus:
 
 def check_repo_manifest_status(project_root, project):
     """Pure read-only manifest check — no print, no input, no sys.exit."""
+    project = logical_project_name(project)
     repo_dir = os.path.join(project_root, ".repo")
     manifest_path = os.path.join(repo_dir, "manifest.xml")
     manifests_dir = os.path.join(repo_dir, "manifests")
@@ -1078,6 +1078,7 @@ def print_manifest_check_summary(current_xml, target_xml, should_switch, missing
 
 
 def compare_repo_manifest(project_root, project):
+    project = logical_project_name(project)
     repo_dir = os.path.join(project_root, ".repo")
     manifest_path = os.path.join(repo_dir, "manifest.xml")
     manifests_dir = os.path.join(repo_dir, "manifests")
@@ -1136,39 +1137,29 @@ def compare_repo_manifest(project_root, project):
 
 
 def resolve_defconfig_paths(project_root, configs_dir, family, project):
-    candidates = defconfig_project_candidates(project)
-    for defconfig_project in candidates:
-        defconfig_main = os.path.join(
-            configs_dir, family, f"{family}_{defconfig_project}_defconfig"
-        )
-        sensorhub_defconfig = os.path.join(
-            configs_dir, family, f"{family}_{defconfig_project}_sensorhub_defconfig"
-        )
-        if os.path.exists(defconfig_main) and os.path.exists(sensorhub_defconfig):
-            return os.path.basename(defconfig_main), os.path.basename(sensorhub_defconfig)
-
-    logical_project = logical_project_name(project)
-    if logical_project in {"milan", "pamir"}:
-        family_dir = os.path.join(configs_dir, family)
-        prefix = f"{family}_{logical_project}_"
-        for name in sorted(os.listdir(family_dir)):
-            if not name.startswith(prefix) or not name.endswith("_defconfig"):
-                continue
-            sensorhub_name = name[:-len("_defconfig")] + "_sensorhub_defconfig"
-            if os.path.exists(os.path.join(family_dir, sensorhub_name)):
-                return name, sensorhub_name
-
-    first = candidates[0]
+    defconfig_main = os.path.join(configs_dir, family, f"{family}_{project}_defconfig")
+    sensorhub_defconfig = os.path.join(
+        configs_dir, family, f"{family}_{project}_sensorhub_defconfig"
+    )
+    if os.path.exists(defconfig_main) and os.path.exists(sensorhub_defconfig):
+        return os.path.basename(defconfig_main), os.path.basename(sensorhub_defconfig)
     fail(
         f"未找到 {project} 对应的主/sensorhub defconfig: "
-        f"{family}_{first}_defconfig"
+        f"{family}_{project}_defconfig"
     )
 
 
 def resolve_sensorhub_target_dir(project_root, family, project):
     products_root = os.path.join(project_root, "platform", "board", family, "products")
     product_path = os.path.join(products_root, project)
-    return os.path.join(product_path, "sensorhub")
+    if os.path.isdir(product_path):
+        return os.path.join(product_path, "sensorhub")
+    if "_" in project:
+        base_project = project.split("_", 1)[0]
+        base_product_path = os.path.join(products_root, base_project)
+        if os.path.isdir(base_product_path):
+            return os.path.join(base_product_path, "sensorhub")
+    fail(f"未找到 sensorhub 对应的项目目录: {product_path}")
 
 
 def resolve_sim_defconfig(project_root, family, project):
@@ -1457,8 +1448,6 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     main_defconfig, sensorhub_defconfig = resolve_defconfig_paths(
         project_root, configs_dir, plan.family, plan.project
     )
-    plan.project = logical_project_name(plan.project)
-
     check_project_switch_requires_reload(build_dir, plan)
     logger = BuildLogger(build_dir, plan.family, plan.project, plan.log)
 
