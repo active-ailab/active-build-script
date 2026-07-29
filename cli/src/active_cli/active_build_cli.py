@@ -1186,7 +1186,8 @@ def check_project_switch_requires_reload(build_dir, plan):
     old_project = state.get("project")
     if not old_family or not old_project:
         return
-    if (old_family, old_project) == (plan.family, plan.project):
+    current_project = resolve_loaded_project(build_dir, plan.family, plan.project)
+    if (old_family, old_project) == (plan.family, current_project):
         return
     if plan.reload_defconfig:
         return
@@ -1194,6 +1195,29 @@ def check_project_switch_requires_reload(build_dir, plan):
         f"当前目标从 {old_family}/{old_project} 切换到 {plan.family}/{plan.project}，"
         f"需要使用 -d 重新加载 defconfig"
     )
+
+
+def resolve_loaded_project(build_dir, family, logical_project):
+    """Resolve the physical project represented by the current .config."""
+    config_path = os.path.join(build_dir, ".config")
+    config_project = read_config_value(config_path, "HMI_PRODUCT_CUSTOMIZE_DIR")
+    if config_project != logical_project:
+        return logical_project
+
+    sku_path = read_config_value(config_path, "HM_SYSTEM_SKU_FILE")
+    if not sku_path:
+        return logical_project
+
+    sku_name = os.path.basename(sku_path)
+    prefix = f"{family}_"
+    suffix = "_sku.json"
+    if not sku_name.startswith(prefix) or not sku_name.endswith(suffix):
+        return logical_project
+
+    candidate = sku_name[len(prefix) : -len(suffix)]
+    if not candidate.startswith(f"{logical_project}_"):
+        return logical_project
+    return candidate
 
 
 def record_build_state(build_dir, plan):

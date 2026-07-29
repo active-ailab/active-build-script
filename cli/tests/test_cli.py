@@ -752,6 +752,37 @@ class ActiveBuildCliTest(unittest.TestCase):
             plan.reload_defconfig = True
             cli.check_project_switch_requires_reload(str(root / "build"), plan)
 
+    def test_project_switch_uses_loaded_sku_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            state = root / "build" / cli.STATE_FILE
+            state.write_text(json.dumps({"family": "mhs003", "project": "milan_64m"}), encoding="utf-8")
+            (root / "build" / ".config").write_text(
+                'HMI_PRODUCT_CUSTOMIZE_DIR="milan"\n'
+                'HM_SYSTEM_SKU_FILE="./configs/mhs003/mhs003_milan_64m_sku.json"\n',
+                encoding="utf-8",
+            )
+
+            plan = cli.BuildPlan(family="mhs003", project="milan", reload_defconfig=False)
+            cli.check_project_switch_requires_reload(str(root / "build"), plan)
+
+    def test_project_switch_rejects_different_loaded_sku_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            state = root / "build" / cli.STATE_FILE
+            state.write_text(json.dumps({"family": "mhs003", "project": "milan"}), encoding="utf-8")
+            (root / "build" / ".config").write_text(
+                'HMI_PRODUCT_CUSTOMIZE_DIR="milan"\n'
+                'HM_SYSTEM_SKU_FILE="./configs/mhs003/mhs003_milan_64m_sku.json"\n',
+                encoding="utf-8",
+            )
+
+            plan = cli.BuildPlan(family="mhs003", project="milan", reload_defconfig=False)
+            with self.assertRaises(SystemExit):
+                cli.check_project_switch_requires_reload(str(root / "build"), plan)
+
     def test_copy_sensorhub_outputs_copies_all_known_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
