@@ -1151,15 +1151,21 @@ def resolve_defconfig_paths(project_root, configs_dir, family, project):
 
 def resolve_sensorhub_target_dir(project_root, family, project):
     products_root = os.path.join(project_root, "platform", "board", family, "products")
-    product_path = os.path.join(products_root, project)
-    if os.path.isdir(product_path):
-        return os.path.join(product_path, "sensorhub")
+    config_project = read_config_value(
+        os.path.join(project_root, "build", ".config"),
+        "HMI_PRODUCT_CUSTOMIZE_DIR",
+    )
+    candidates = []
+    if config_project:
+        candidates.append(config_project)
+    candidates.append(project)
     if "_" in project:
-        base_project = project.split("_", 1)[0]
-        base_product_path = os.path.join(products_root, base_project)
-        if os.path.isdir(base_product_path):
-            return os.path.join(base_product_path, "sensorhub")
-    fail(f"未找到 sensorhub 对应的项目目录: {product_path}")
+        candidates.append(project.split("_", 1)[0])
+    for candidate in dict.fromkeys(candidates):
+        product_path = os.path.join(products_root, candidate)
+        if os.path.isdir(product_path):
+            return os.path.join(product_path, "sensorhub")
+    fail(f"未找到 sensorhub 对应的项目目录: {os.path.join(products_root, candidates[0])}")
 
 
 def resolve_sim_defconfig(project_root, family, project):

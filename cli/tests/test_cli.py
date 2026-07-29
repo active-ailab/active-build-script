@@ -681,6 +681,39 @@ class ActiveBuildCliTest(unittest.TestCase):
                 str(exact_product / "sensorhub"),
             )
 
+    def test_sensorhub_target_prefers_hmi_customize_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            products = root / "platform" / "board" / "mhs003" / "products"
+            hmi_product = products / "milan"
+            exact_product = products / "milan_64m"
+            hmi_product.mkdir(parents=True)
+            exact_product.mkdir()
+            (root / "build").mkdir()
+            (root / "build" / ".config").write_text(
+                'HMI_PRODUCT_CUSTOMIZE_DIR="milan"\n', encoding="utf-8"
+            )
+
+            self.assertEqual(
+                cli.resolve_sensorhub_target_dir(str(root), "mhs003", "milan_64m"),
+                str(hmi_product / "sensorhub"),
+            )
+
+    def test_sensorhub_target_falls_back_when_hmi_directory_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exact_product = root / "platform" / "board" / "mhs003" / "products" / "milan_64m"
+            exact_product.mkdir(parents=True)
+            (root / "build").mkdir()
+            (root / "build" / ".config").write_text(
+                'HMI_PRODUCT_CUSTOMIZE_DIR="milan"\n', encoding="utf-8"
+            )
+
+            self.assertEqual(
+                cli.resolve_sensorhub_target_dir(str(root), "mhs003", "milan_64m"),
+                str(exact_product / "sensorhub"),
+            )
+
     def test_find_available_families_only_exposes_enabled_chips(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
