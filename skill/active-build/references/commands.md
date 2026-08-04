@@ -1,6 +1,6 @@
 # active-build 命令参考
 
-`active-build` 是固件构建入口，`active-bstyle` 是 bstyle 编译入口。agent 不能绕过 CLI 自己重写编译或 bstyle 编译逻辑。
+`active-build` 是固件构建入口，`active-bstyle` 是 bstyle 编译入口，`active-ui` 是 UI 资源编译入口。agent 不能绕过 CLI 自己重写这些编译逻辑。
 
 ## 帮助
 

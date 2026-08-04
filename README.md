@@ -1,11 +1,13 @@
 # active-build
 
-Active/Zepp 工作区统一编译 CLI。定位工作区根目录、校验目标项目，并在 `build/` 下执行 `make` 构建流程。
+<!-- Owner: cs-dongqi@zepp.com / Organization: Active.Bu -->
+
+Active/Zepp 工作区统一编译 CLI。包含固件编译 `active-build`、style 编译 `active-bstyle` 和 UI 资源编译 `active-ui`。
 
 ## 安装
 
 ```sh
-# 安装 CLI（active-build + active-bstyle）
+# 安装 CLI（active-build + active-bstyle + active-ui）
 sh install.sh cli
 
 # 安装 CLI 和 Agent Skill
@@ -173,6 +175,62 @@ active-bstyle -i ./styles/ -o ./output/ -f mhs003 -p cologne --dry-run
 
 编译成功后，交互终端中会询问是否推送 `.bstyle` 到设备（通过 `wlctl.sh fs push-bstyle` 写入 `SYSTEM/resources/styles/`），默认选否。非交互终端和 `--dry-run` 模式下跳过推送确认。
 
+## active-ui
+
+独立的 UI 资源编译命令，直接使用当前 workspace 的 `build/.config`。
+
+```sh
+# 无参数进入交互模式
+active-ui
+
+# 命令行模式；未指定类型时默认 --all
+active-ui --gapp
+active-ui --csv
+active-ui --all
+
+# 指定目标项目；会先执行主工程配置准备
+active-ui -f mhs003s -p atlas --all
+
+# 指定 workspace 或执行 dry-run
+active-ui -w /home/zepp/workspace/mod --gapp
+active-ui --dry-run --all
+```
+
+参数说明：
+
+- `--gapp`：生成 `build/Application.bin` 和 `build/Application.crc`
+- `--csv`：生成 `build/locale.zip`
+- `--all`：生成以上全部资源；省略类型时默认使用 `all`
+- `-f/-p`：同时指定 family/project；触发 `make distclean`、`make clean` 和主工程 defconfig
+- `-w`：指定 workspace 根目录或 `build/` 目录
+- `-i`：读取 UI BuildPlan JSON
+- `-l`：写入 `build/logs/active-ui/`
+- `--dry-run`：只打印配置准备和 UI 生成命令，不修改 `.config` 或生成产物
+
+UI 生成阶段始终执行：
+
+```text
+备份 build/.config
+→ 临时设置 HMI_UPGRADE_CHECK_GAPP=n
+→ makeUI.py
+→ gapp2bin / locale 打包
+→ 校验产物由本次生成
+→ 恢复 build/.config
+→ 删除配置备份并检查是否遗留
+```
+
+`active-ui` 不执行 `make ota` 或 sensorhub 编译；交互终端可在产物生成后确认定向设备推送，但不会自动烧录固件。
+
+交互终端中，UI 产物生成成功后可以确认通过 Watch-Link 定向入口推送：
+
+```text
+gapp → wlctl fs push-gapp --from-path build/
+csv  → wlctl fs push-csv --from-path build/
+all  → 依次执行以上两个入口
+```
+
+非交互终端和 `--dry-run` 跳过设备推送确认。
+
 ## 运行状态
 
 成功构建后写入 `build/.active-build-state.json`，记录 `family`、`project`、`threads`、`updated_at`。下次 `-j` 未指定时优先复用其中的线程数。旧的 `.hmbuild_last_threads` 文件在写入新状态后自动清理。
@@ -241,6 +299,7 @@ active-build-script/
       active_common.py
       active_build_cli.py
       active_bstyle_cli.py
+      active_ui_cli.py
     tests/
     pyproject.toml
   skill/
@@ -248,6 +307,8 @@ active-build-script/
       SKILL.md
       agents/openai.yaml
       references/commands.md
+    active-ui/
+      SKILL.md
   install.sh
   README.md
   VERSION
@@ -260,4 +321,5 @@ cd cli
 env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 PYTHONPATH=src python3 -m active_cli.active_build_cli --help
 PYTHONPATH=src python3 -m active_cli.active_bstyle_cli --help
+PYTHONPATH=src python3 -m active_cli.active_ui_cli --help
 ```

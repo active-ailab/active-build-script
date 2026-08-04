@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from active_cli import active_bstyle_cli as bstyle_cli
 from active_cli import active_build_cli as cli
+from active_cli import active_ui_cli as ui_cli
 from active_cli.active_tui import TuiPage
 
 
@@ -69,6 +70,20 @@ def make_gen_styles_script(root: Path) -> Path:
 
 
 class ActiveBuildCliTest(unittest.TestCase):
+    def test_active_ui_defaults_to_all_when_mode_is_omitted(self):
+        plan = ui_cli.parse_args(["--dry-run"], "/tmp")
+        self.assertEqual(plan.mode, "all")
+        self.assertTrue(plan.dry_run)
+
+    def test_active_ui_accepts_family_project_and_requires_both(self):
+        plan = ui_cli.parse_args(["-f", "mhs003", "-p", "cologne", "--gapp"], "/tmp")
+        self.assertEqual(plan.family, "mhs003")
+        self.assertEqual(plan.project, "cologne")
+        self.assertEqual(plan.mode, "gapp")
+
+        with self.assertRaises(SystemExit):
+            ui_cli.parse_args(["-f", "mhs003", "--all"], "/tmp")
+
     def test_tui_choice_prefix_match_cycles_single_character(self):
         options = ["atlas", "matrix", "mod", "muse"]
 
