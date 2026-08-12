@@ -521,6 +521,8 @@ def infer_plan_target_from_config(plan, build_dir):
         fail(f"当前配置缺少 HMI_PRODUCT_CUSTOMIZE_DIR: {config_path}")
     plan.family = family
     plan.project = project
+    if plan.reload_defconfig:
+        plan.project = resolve_loaded_project(build_dir, plan.family, plan.project)
 
 
 def prompt_threads(default_threads, allow_back=False):

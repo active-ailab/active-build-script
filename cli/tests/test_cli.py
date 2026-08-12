@@ -815,6 +815,29 @@ class ActiveBuildCliTest(unittest.TestCase):
             plan = cli.BuildPlan(family="mhs003", project="milan", reload_defconfig=False)
             cli.check_project_switch_requires_reload(str(root / "build"), plan)
 
+    def test_current_config_reload_uses_loaded_sku_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            (root / "build" / ".config").write_text(
+                'HMI_BUILD_BOARD="mhs003"\n'
+                'HMI_PRODUCT_CUSTOMIZE_DIR="milan"\n'
+                'HM_SYSTEM_SKU_FILE="./configs/mhs003/mhs003_milan_64m_sku.json"\n',
+                encoding="utf-8",
+            )
+
+            reload_plan = cli.BuildPlan(
+                mode="fw", use_current_config=True, reload_defconfig=True
+            )
+            cli.infer_plan_target_from_config(reload_plan, str(root / "build"))
+            self.assertEqual((reload_plan.family, reload_plan.project), ("mhs003", "milan_64m"))
+
+            current_plan = cli.BuildPlan(
+                mode="fw", use_current_config=True, reload_defconfig=False
+            )
+            cli.infer_plan_target_from_config(current_plan, str(root / "build"))
+            self.assertEqual((current_plan.family, current_plan.project), ("mhs003", "milan"))
+
     def test_project_switch_rejects_different_loaded_sku_variant(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
