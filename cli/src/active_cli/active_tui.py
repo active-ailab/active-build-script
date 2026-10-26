@@ -59,6 +59,8 @@ class MenuItem:
     # ACTION only: lambda(page: TuiPage) -> bool.  Called BEFORE action_guard.
     # Returns True → skip this action (Back pressed), False → continue to guard/build.
     action_confirm: Optional[Callable] = None
+    # Disabled dropdown options: lambda(state: dict) -> iterable[str]
+    disabled_options_provider: Optional[Callable] = None
 
 
 @dataclass
@@ -160,6 +162,19 @@ class TuiPage:
                 return item.options or []
         return item.options or []
 
+    @staticmethod
+    def _disabled_options(item, state) -> set[str]:
+        if not item.disabled_options_provider:
+            return set()
+        try:
+            return set(item.disabled_options_provider(state))
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _first_enabled_option(options, disabled_options):
+        return next((option for option in options if option not in disabled_options), None)
+
     def _check_visible(self, section, item, state) -> bool:
         if section.visible_when:
             try:
@@ -217,8 +232,11 @@ class TuiPage:
             for item in section.items:
                 if changed_key in item.refreshes:
                     opts = self._effective_options(item, state)
-                    if item.value not in opts and opts:
-                        item.value = opts[0]
+                    disabled = self._disabled_options(item, state)
+                    if (item.value not in opts or item.value in disabled) and opts:
+                        first_enabled = self._first_enabled_option(opts, disabled)
+                        if first_enabled is not None:
+                            item.value = first_enabled
                         affected.append(item)
         for item in affected:
             if item.on_change:
@@ -542,14 +560,18 @@ class TuiPage:
         # ACTION is handled at the action bar level
 
     @staticmethod
-    def _choice_prefix_match(options, prefix, selected, include_current=False):
+    def _choice_prefix_match(
+        options, prefix, selected, include_current=False, disabled_options=None
+    ):
         if not prefix:
             return None
+        disabled_options = disabled_options or set()
         prefix = prefix.casefold()
         start = selected if include_current else (selected + 1) % len(options)
         for offset in range(len(options)):
             idx = (start + offset) % len(options)
-            if str(options[idx]).casefold().startswith(prefix):
+            if (options[idx] not in disabled_options
+                    and str(options[idx]).casefold().startswith(prefix)):
                 return idx
         return None
 
@@ -557,6 +579,9 @@ class TuiPage:
         state = self._collect_state()
         options = self._effective_options(item, state)
         if not options:
+            return
+        disabled_options = self._disabled_options(item, state)
+        if not any(option not in disabled_options for option in options):
             return
 
         try:
@@ -579,6 +604,8 @@ class TuiPage:
         popup.keypad(True)
 
         selected = current_idx
+        if options[selected] in disabled_options:
+            selected = options.index(self._first_enabled_option(options, disabled_options))
         scroll_off = 0
         search_prefix = ""
         last_search_at = 0
@@ -614,14 +641,15 @@ class TuiPage:
                 display = self._truncate_by_dw(display, popup_width - 4)
                 pad = popup_width - 4 - self._display_width(display)
                 display += " " * max(0, pad)
+                attr = curses.A_DIM if opt in disabled_options else curses.A_NORMAL
                 if opt_idx == selected:
                     try:
-                        popup.addstr(i + 1, 1, display, self._highlight_attr())
+                        popup.addstr(i + 1, 1, display, self._highlight_attr() | attr)
                     except curses.error:
                         pass
                 else:
                     try:
-                        popup.addstr(i + 1, 1, display, curses.A_NORMAL)
+                        popup.addstr(i + 1, 1, display, attr)
                     except curses.error:
                         pass
 
@@ -630,12 +658,19 @@ class TuiPage:
             key = popup.getch()
             if key == curses.KEY_UP:
                 search_prefix = ""
-                selected = (selected - 1) % len(options)
+                for _ in range(len(options)):
+                    selected = (selected - 1) % len(options)
+                    if options[selected] not in disabled_options:
+                        break
             elif key == curses.KEY_DOWN:
                 search_prefix = ""
-                selected = (selected + 1) % len(options)
+                for _ in range(len(options)):
+                    selected = (selected + 1) % len(options)
+                    if options[selected] not in disabled_options:
+                        break
             elif key in (curses.KEY_ENTER, 10, 13):
-                item.value = options[selected]
+                if options[selected] not in disabled_options:
+                    item.value = options[selected]
                 return
             elif key == 27:  # Esc
                 return
@@ -654,10 +689,16 @@ class TuiPage:
                         candidate_prefix,
                         selected,
                         include_current=len(candidate_prefix) > 1,
+                        disabled_options=disabled_options,
                     )
                     if match_idx is None and len(candidate_prefix) == 2 and candidate_prefix[0] == ch:
                         candidate_prefix = ch
-                        match_idx = self._choice_prefix_match(options, candidate_prefix, selected)
+                        match_idx = self._choice_prefix_match(
+                            options,
+                            candidate_prefix,
+                            selected,
+                            disabled_options=disabled_options,
+                        )
                     if match_idx is not None:
                         search_prefix = candidate_prefix
                         selected = match_idx

@@ -3,6 +3,8 @@ name: active-build
 description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区、迁移 hmbuild.py 用法、生成或确认 BuildPlan、串行执行多个构建计划、或诊断 active-build 构建失败时使用。本 skill 只负责 CLI 使用工作流，不重写 CLI 的构建逻辑。
 ---
 
+<!-- Owner: cs-dongqi@zepp.com / Organization: Active.Bu -->
+
 # active-build CLI Skill
 
 使用本 skill 时，固件构建必须通过已安装的 `active-build` CLI 执行，bstyle 编译必须通过已安装的 `active-bstyle` CLI 执行。skill 可以帮助推断、生成、确认计划，但不能在 agent 侧重写编译流程。
@@ -139,6 +141,8 @@ CLI 接收的 BuildPlan 字段如下：
 
 - `action` 为 `build` 时执行固件构建。
 - `mode` 支持 `fw`、`firmware`、`app`、`ota`、`sensorhub`、`sensorhub-fw`、`sensorhub-firmware`、`sensorhub-ota`、`debug`、`release`、`sim`。
+- `apollo4` 和 `apollo5` 为无 sensorhub 芯片：不支持 `sensorhub` 相关 mode 或 `sim`；TUI 中这些选项置灰，CLI 直接调用时返回明确错误。两者的 `debug` / `release` 快捷入口执行主工程 OTA，`release` 仍使用 `BUILD_TYPE=release`。
+- `apollo5` 的主 defconfig 文件名以 `apollo330` 开头，格式为 `apollo330_<project>_defconfig`。
 - `app` 会被 CLI 规范化为 `firmware`。
 - `build_type` 支持 `debug`、`inspect`、`release_log`、`release`。
 - `build_type` 可作为全局默认值，由 `main_build_type` 或 `sensorhub_build_type` 覆盖分阶段设置。
@@ -193,16 +197,18 @@ active-bstyle [-i input.style | -i <dir>] [-o output.bstyle | -o <dir>] [-f fami
 readlink -f .repo/manifest.xml
 ```
 
-4. 以活动 XML 的 basename（去掉 `.xml`）作为第一候选 project；若为 `huamiOS.xml` 或无法唯一判断，则再结合 `build/.config` 中的 `HMI_BUILD_BOARD` 与 `HMI_PRODUCT_CUSTOMIZE_DIR` 判断。
-5. 校验以下文件是否存在：
+4. 以活动 XML 的 basename（去掉 `.xml`）作为第一候选 project；旧芯片若为 `huamiOS.xml` 或无法唯一判断，再结合 `build/.config` 中的 `HMI_BUILD_BOARD` 与 `HMI_PRODUCT_CUSTOMIZE_DIR` 判断。Apollo4/Apollo5 不支持 `huamiOS.xml` 作为全局默认清单，必须使用项目专属的 `<project>.xml`；当前若仍指向 `huamiOS.xml`，可用 `.config` 辅助识别项目，但应提示切换到项目专属 XML。
+5. 通常校验以下文件是否存在：
 
 ```text
 configs/<family>/<family>_<project>_defconfig
 configs/<family>/<family>_<project>_sensorhub_defconfig
 ```
 
+`apollo4` 只校验 `configs/apollo4/apollo4_<project>_defconfig`；`apollo5` 只校验 `configs/apollo5/apollo330_<project>_defconfig`。这两个 family 不要求 sensorhub defconfig，也不支持 sensorhub 或 sim 构建。
+
 6. 若只匹配到一个 family，则使用它；若匹配多个或无法匹配，不要猜测，直接向用户确认缺失信息。
-7. 关于 `mode` 配置，不要把 `debug` 或 `release` 作为最终确认给用户的构建模式；默认快速构建应直接使用：
+7. 关于 `mode` 配置，不要把 `debug` 或 `release` 作为最终确认给用户的构建模式；默认快速构建应直接使用（apollo4/apollo5 使用 `ota`）：
 
 ```json
 {
@@ -223,7 +229,7 @@ configs/<family>/<family>_<project>_sensorhub_defconfig
 }
 ```
 
-8. `debug` / `release` 只作为 CLI 内部快捷完整编译入口使用；对用户展示和最终确认时，应明确成实际构建模式。
+8. `debug` / `release` 只作为 CLI 内部快捷完整编译入口使用；对用户展示和最终确认时，应明确成实际构建模式。若 family 是 `apollo4` 或 `apollo5`，实际构建模式为 `ota`。
 9. 展示最终 BuildPlan，等待用户确认后再运行。
 
 ## 用户给了部分信息时
@@ -233,7 +239,7 @@ configs/<family>/<family>_<project>_sensorhub_defconfig
 - 若用户要求使用当前配置继续编译，则设置 `use_current_config: true`，并使用用户指定的 `mode`，例如 `fw`、`ota`、`sensorhub-ota`。
 - 若用户要求 `app`，可使用 `mode: "app"` 或 `mode: "fw"`；CLI 会将其视为 firmware。
 - 若用户提到 debug/release/sim，需要区分"快捷入口"和"最终 mode 配置"。
-- BuildPlan 对用户展示和最终确认时，不要把 `debug` 或 `release` 作为最终 `mode` 值，改用明确的实际模式，例如 `sensorhub-ota`。
+- BuildPlan 对用户展示和最终确认时，不要把 `debug` 或 `release` 作为最终 `mode` 值，改用明确的实际模式，例如 `sensorhub-ota`；apollo4/apollo5 使用 `ota`。
 - 用户未指定线程数时，agent 生成 BuildPlan 默认使用 `"8"`。
 
 ## Lark MCP 结果通知规则

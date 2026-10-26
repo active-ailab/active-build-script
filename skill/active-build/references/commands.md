@@ -1,3 +1,5 @@
+<!-- Owner: cs-dongqi@zepp.com / Organization: Active.Bu -->
+
 # active-build 命令参考
 
 `active-build` 是固件构建入口，`active-bstyle` 是 bstyle 编译入口，`active-ui` 是 UI 资源编译入口。agent 不能绕过 CLI 自己重写这些编译逻辑。
@@ -118,6 +120,9 @@ debug, inspect, release_log, release
 
 - `debug`、`release` 是快捷完整编译入口，CLI 内部会规范化为实际构建流程。
 - 对用户展示和最终确认 BuildPlan 时，不应把 `debug` 或 `release` 当作最终 `mode` 配置，应直接使用 `sensorhub-ota` 等实际模式。
+- `apollo4` / `apollo5` 不支持 sensorhub 和 sim；TUI 对应选项置灰，CLI 直接调用时返回错误。两者的 `debug` / `release` 快捷入口走主工程 OTA，`release` 仍追加 `BUILD_TYPE=release`。
+- `apollo5` 主 defconfig 路径为 `configs/apollo5/apollo330_<project>_defconfig`。
+- `huamiOS.xml` 全局默认 manifest 仅适用于旧芯片；Apollo4/Apollo5 必须匹配项目专属的 `<project>.xml`，使用 `huamiOS.xml` 时会提示需要切换。
 - `-b/-a/-u` 都会保留在 BuildPlan 语义中，但实际拼接 `make` 命令时，只有 `release` 会写入 `BUILD_TYPE=release`；`debug`、`inspect`、`release_log` 不会写入运行命令。
 - `-v/-V` 继续映射到 BuildPlan 的 `version` 字段。旧工程中它表示显式 `.config` 版本覆写；新工程中它表示 OTA 阶段的 `BUILD_FW_VER`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本。
 
@@ -131,7 +136,7 @@ debug, inspect, release_log, release
 - 新工程默认 `999.999` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量
 - 在 `build/out_hub/` 下构建 sensorhub
-- family/project 校验只依赖 main defconfig 与 sensorhub defconfig，不强制依赖产品目录
+- 常规 family/project 校验依赖 main defconfig 与 sensorhub defconfig，不强制依赖产品目录；`apollo4` / `apollo5` 只使用主工程 defconfig
 - 执行 firmware 或 ota 阶段
 - 交互终端中，构建成功后默认进入烧录确认流程；`firmware` / `sensorhub-firmware` 确认后执行 `v3dl app`，`ota` / `sensorhub-ota` 确认后执行 `v3dl ota`
 - `sensorhub` 和 `sim` 构建成功后直接跳过烧录确认；非交互终端也会跳过烧录确认

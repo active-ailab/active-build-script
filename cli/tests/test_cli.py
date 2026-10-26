@@ -1,6 +1,7 @@
 # Owner: cs-dongqi@zepp.com
 # Organization: Active.Bu
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -101,6 +102,16 @@ class ActiveBuildCliTest(unittest.TestCase):
         self.assertEqual(
             TuiPage._choice_prefix_match(options, "mos", 1, include_current=True),
             2,
+        )
+
+    def test_tui_choice_prefix_match_skips_disabled_options(self):
+        options = ["ota", "sensorhub", "sensorhub-ota"]
+
+        self.assertEqual(
+            TuiPage._choice_prefix_match(
+                options, "s", 0, disabled_options={"sensorhub", "sensorhub-ota"}
+            ),
+            None,
         )
 
     def test_probe_python3_default_reports_ok(self):
@@ -738,6 +749,102 @@ class ActiveBuildCliTest(unittest.TestCase):
 
             self.assertEqual(families, ["mhs003", "mhs003s"])
 
+    def test_apollo_families_use_main_defconfig_without_sensorhub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configs = root / "configs"
+            (configs / "apollo4").mkdir(parents=True)
+            (configs / "apollo5").mkdir(parents=True)
+            (configs / "apollo4" / "apollo4_altai_defconfig").write_text(
+                "# main\n", encoding="utf-8"
+            )
+            (configs / "apollo4" / "apollo4_altai_boot_defconfig").write_text(
+                "# derived\n", encoding="utf-8"
+            )
+            (configs / "apollo5" / "apollo330_fuji_defconfig").write_text(
+                "# main\n", encoding="utf-8"
+            )
+            (configs / "apollo5" / "apollo330_fuji_boot_defconfig").write_text(
+                "# derived\n", encoding="utf-8"
+            )
+
+            self.assertEqual(cli.build_families(str(configs)), ["apollo4", "apollo5"])
+            self.assertEqual(cli.build_projects(str(root), str(configs), "apollo4"), ["altai"])
+            self.assertEqual(cli.build_projects(str(root), str(configs), "apollo5"), ["fuji"])
+            self.assertEqual(
+                cli.resolve_defconfig_paths(str(root), str(configs), "apollo5", "fuji"),
+                ("apollo330_fuji_defconfig", None),
+            )
+
+    def test_apollo_families_reject_sensorhub_and_sim_modes(self):
+        for family in ("apollo4", "apollo5"):
+            for mode in ("sensorhub", "sensorhub-firmware", "sensorhub-ota", "sim"):
+                with self.subTest(family=family, mode=mode):
+                    with self.assertRaises(SystemExit):
+                        cli.normalize_mode(mode, family)
+
+            self.assertEqual(cli.normalize_mode("debug", family), "ota")
+            self.assertEqual(cli.normalize_mode("release", family), "ota")
+
+        self.assertEqual(cli.normalize_mode("release", "mhs003"), "sensorhub-ota")
+
+    def test_apollo_release_ota_runs_only_main_build_commands(self):
+        original_cwd = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                build_dir = root / "build"
+                configs = root / "configs"
+                (configs / "apollo4").mkdir(parents=True)
+                (configs / "apollo5").mkdir(parents=True)
+                (configs / "apollo4" / "apollo4_altai_defconfig").write_text(
+                    "# main\n", encoding="utf-8"
+                )
+                (configs / "apollo5" / "apollo330_fuji_defconfig").write_text(
+                    "# main\n", encoding="utf-8"
+                )
+                enable_build_fw_ver(root)
+
+                for family, project, main_defconfig in (
+                    ("apollo4", "altai", "apollo4_altai_defconfig"),
+                    ("apollo5", "fuji", "apollo330_fuji_defconfig"),
+                ):
+                    commands = []
+                    plan = cli.BuildPlan(
+                        family=family,
+                        project=project,
+                        mode="release",
+                        threads="8",
+                        reload_defconfig=True,
+                        version="23.4",
+                        version_explicit=True,
+                    )
+
+                    with mock.patch.object(cli, "ensure_python3_default"), mock.patch.object(
+                        cli, "compare_repo_manifest", return_value=True
+                    ), mock.patch.object(cli, "run_cmd", side_effect=lambda cmd, logger=None: commands.append(cmd)), mock.patch.object(
+                        cli.sys, "stdin", mock.Mock(isatty=mock.Mock(return_value=False))
+                    ):
+                        cli.run_build_plan(
+                            cli.normalize_plan(plan),
+                            str(root),
+                            str(root),
+                            str(configs),
+                            str(build_dir),
+                        )
+
+                    self.assertIn("make " + main_defconfig + " BUILD_TYPE=release", commands)
+                    self.assertIn(
+                        "make ota BUILD_TYPE=release FW_VER_STRATEGY=os_global "
+                        "BUILD_FW_VER=23.4 -j8",
+                        commands,
+                    )
+                    self.assertFalse(
+                        any("APPDIR=" in command or "BUILD_DIR=out_hub" in command for command in commands)
+                    )
+        finally:
+            os.chdir(original_cwd)
+
     def test_patch_config_version_replaces_and_appends(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / ".config"
@@ -1242,6 +1349,33 @@ class ActiveBuildCliTest(unittest.TestCase):
                 self.assertTrue(cli.compare_repo_manifest(str(root), "cologne"))
 
             confirm.assert_called_once_with(False)
+
+    def test_apollo_manifest_requires_project_xml_instead_of_huamiOS_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / ".repo"
+            manifests = repo / "manifests"
+            manifests.mkdir(parents=True)
+            (manifests / "huamiOS.xml").write_text(
+                '<manifest><project name="global" /></manifest>\n', encoding="utf-8"
+            )
+            (manifests / "altai.xml").write_text(
+                '<manifest><project name="altai" /></manifest>\n', encoding="utf-8"
+            )
+            (repo / "manifest.xml").symlink_to(manifests / "huamiOS.xml")
+
+            apollo_status = cli.check_repo_manifest_status(str(root), "altai", "apollo4")
+            legacy_status = cli.check_repo_manifest_status(str(root), "altai", "mhs003")
+
+            self.assertFalse(apollo_status.ok)
+            self.assertEqual(apollo_status.target_xml, "altai.xml")
+            self.assertTrue(legacy_status.ok)
+            self.assertEqual(legacy_status.target_xml, "huamiOS.xml")
+
+            with mock.patch.object(cli, "confirm_manifest_choice", return_value=True) as confirm:
+                self.assertTrue(cli.compare_repo_manifest(str(root), "altai", "apollo5"))
+
+            confirm.assert_called_once_with(True)
 
     def test_compare_repo_manifest_accepts_legacy_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -37,7 +37,7 @@ active-build
 
 | 参数 | 说明 |
 |------|------|
-| `-f <family>` | 芯片目录：`mhs003`、`mhs003s` |
+| `-f <family>` | 芯片目录：`mhs003`、`mhs003s`、`apollo4`、`apollo5` |
 | `-p <project>` | 项目名称 |
 | `-m <mode>` | 构建模式（见下方） |
 | `-j <threads>` | 线程数，默认 `CPU 核数 × 2`，其次复用上次构建记录 |
@@ -64,6 +64,8 @@ active-build
 | `sensorhub-ota` | `sensorhub-ota` | sensorhub + OTA（默认） |
 | `debug` / `release` | `sensorhub-ota` | 快捷完整编译入口 |
 | `sim` | `sim` | 模拟器（distclean → clean → defconfig + BUILD_SIM → make ota） |
+
+`apollo4` / `apollo5` 不支持 `sensorhub` 相关模式和 `sim`。TUI 中对应选项置灰，CLI 直接调用时返回错误。`debug` / `release` 快捷入口在这两个 family 下执行主工程 OTA；`release` 仍传入 `BUILD_TYPE=release`。`apollo5` 的主 defconfig 文件名为 `apollo330_<project>_defconfig`。
 
 ### BUILD_TYPE
 
@@ -122,6 +124,7 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 - JSON 含 `version` 但缺 `version_explicit` 时，CLI 按 `version_explicit: true` 处理。
 - `use_current_config: true` 时从 `build/.config` 推断 family/project。
 - `workspace` 可为项目根目录或 `build/` 子目录。
+- `apollo4` 和 `apollo5` 的 BuildPlan 仅支持主工程构建；sensorhub / sim mode 会被拒绝。
 
 ## 版本号规则
 

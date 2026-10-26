@@ -46,6 +46,9 @@ DEFAULT_VERSION = "10.0.0"
 DEFAULT_BUILD_FW_VER = "999.999"
 LEGACY_LAST_THREADS_FILE = ".hmbuild_last_threads"
 SENSORHUB_APPDIR = "out_hub"
+ADDITIONAL_FAMILIES = ("apollo4", "apollo5")
+NO_SENSORHUB_SIM_FAMILIES = frozenset(ADDITIONAL_FAMILIES)
+DEFCONFIG_PREFIXES = {"apollo5": "apollo330"}
 VALID_BUILD_TYPES = {"debug", "inspect", "release_log", "release"}
 HELP_TEXT = """\
 用法:
@@ -55,7 +58,7 @@ HELP_TEXT = """\
   active-build -i <plan-file>
 
 核心参数:
-  -f <family>       family / 芯片目录，例如 mhs003、mhs003s
+  -f <family>       family / 芯片目录，例如 mhs003、mhs003s、apollo4、apollo5
   -p <project>      项目名称，例如 cologne、geneva、atlas
   -m <mode>         完整构建模式：fw、ota、sensorhub、sensorhub-fw、sensorhub-ota、debug、release、sim
   -j <threads>      构建线程数
@@ -74,6 +77,9 @@ HELP_TEXT = """\
 
 支持的 mode:
   fw, firmware, app, ota, sensorhub, sensorhub-fw, sensorhub-firmware, sensorhub-ota, debug, release, sim
+
+apollo4 / apollo5 不支持 sensorhub 和 sim；debug / release 快捷入口执行主工程 OTA。
+apollo5 主 defconfig 使用 apollo330_<project>_defconfig 命名。
 
 支持的 build type:
   debug, inspect, release_log, release
@@ -239,10 +245,42 @@ def remove_legacy_last_threads(project_root):
         print(f"{YELLOW}清理历史线程数文件失败: {error}{RESET}")
 
 
-def normalize_mode(mode):
+def build_families(configs_dir):
+    return find_available_families(configs_dir, ADDITIONAL_FAMILIES)
+
+
+def build_defconfig_prefix(family):
+    return DEFCONFIG_PREFIXES.get(family, family)
+
+
+def build_projects(project_root, configs_dir, family):
+    return list_projects(
+        project_root,
+        configs_dir,
+        family,
+        defconfig_prefix=build_defconfig_prefix(family),
+        require_sensorhub=family not in NO_SENSORHUB_SIM_FAMILIES,
+    )
+
+
+def normalize_mode(mode, family=None):
     if mode is None:
+        if family in NO_SENSORHUB_SIM_FAMILIES:
+            return "ota"
         fail("缺少构建模式")
     value = str(mode).lower()
+    if family in NO_SENSORHUB_SIM_FAMILIES:
+        if value in {
+            "sensorhub", "senserhub", "sensorhub-fw", "sensorhub-firmware",
+            "senserhub-fw", "senserhub-firmware", "sensorhub-ota", "senserhub-ota",
+        }:
+            fail(f"芯片 {family} 不支持 sensorhub 构建模式: {mode}")
+        if value == "sim":
+            fail(f"芯片 {family} 不支持 sim 构建模式")
+        if value in {"debug", "release"}:
+            value = "ota"
+    elif family is None and value in {"debug", "release"}:
+        return value
     aliases = {
         "fw": "firmware",
         "firmware": "firmware",
@@ -329,7 +367,7 @@ def normalize_plan(plan):
         fail(f"不支持的 BuildPlan action: {plan.action}")
 
     original_mode = plan.mode
-    plan.mode = normalize_mode(plan.mode)
+    plan.mode = normalize_mode(plan.mode, plan.family)
     if plan.build_type is None:
         plan.build_type = implied_build_type(original_mode)
 
@@ -403,6 +441,9 @@ def plan_from_json(path, cwd):
         data["version_explicit"] = True
 
     plan = BuildPlan(**data)
+    if "mode" not in data:
+        plan.mode = "ota" if plan.family in NO_SENSORHUB_SIM_FAMILIES else "sensorhub-ota"
+        setattr(plan, "_mode_implicit", True)
     if plan.workspace and not os.path.isabs(plan.workspace):
         plan.workspace = os.path.abspath(os.path.join(cwd, plan.workspace))
     return normalize_plan(plan)
@@ -722,12 +763,12 @@ def collect_tui_build_plan(project_root, configs_dir):
     default_threads = int(last_threads) if last_threads else multiprocessing.cpu_count() * 2
     default_version = default_version_for_project(project_root)
 
-    families = find_available_families(configs_dir)
+    families = build_families(configs_dir)
     if not families:
         fail("configs 下未找到可用芯片目录")
 
     initial_family = families[0]
-    projects = list_projects(project_root, configs_dir, initial_family)
+    projects = build_projects(project_root, configs_dir, initial_family)
     if not projects:
         fail(f"{initial_family} 下未找到可编译的 defconfig")
     initial_project = projects[0]
@@ -735,6 +776,19 @@ def collect_tui_build_plan(project_root, configs_dir):
     BUILD_TYPE_OPTS = ["默认", "debug", "inspect", "release_log", "release"]
     QUICK_MODES = ["release", "debug", "sim"]
     ADV_MODES = ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
+
+    def _advanced_mode_options(state):
+        if state.get("family") in NO_SENSORHUB_SIM_FAMILIES:
+            return ["ota", "firmware"] + ADV_MODES[2:]
+        return ADV_MODES
+
+    def _disabled_quick_modes(state):
+        return {"sim"} if state.get("family") in NO_SENSORHUB_SIM_FAMILIES else set()
+
+    def _disabled_advanced_modes(state):
+        if state.get("family") in NO_SENSORHUB_SIM_FAMILIES:
+            return {"sensorhub", "sensorhub-firmware", "sensorhub-ota"}
+        return set()
     python_status = probe_python3_default()
     manifest_status = {"ms": None, "checked": False}
 
@@ -750,7 +804,9 @@ def collect_tui_build_plan(project_root, configs_dir):
         if not p:
             manifest_status["checked"] = False
         else:
-            manifest_status["ms"] = check_repo_manifest_status(project_root, p)
+            manifest_status["ms"] = check_repo_manifest_status(
+                project_root, p, state.get("family")
+            )
             manifest_status["checked"] = True
         _update_status_items(page)
 
@@ -788,10 +844,11 @@ def collect_tui_build_plan(project_root, configs_dir):
         sections=[
             MenuSection("Target", items=[
                 MenuItem("Chip Family", "family", FieldType.CHOICE,
-                         value=None, options=families),
+                         value=None, options=families,
+                         on_change=_on_project_changed),
                 MenuItem("Project", "project", FieldType.CHOICE,
                          value=None,
-                         options_provider=lambda s: list_projects(project_root, configs_dir, s.get("family", "")),
+                         options_provider=lambda s: build_projects(project_root, configs_dir, s.get("family", "")),
                          refreshes=["family"],
                          enabled_when=lambda s: bool(s.get("family")),
                          on_change=_on_project_changed),
@@ -805,14 +862,19 @@ def collect_tui_build_plan(project_root, configs_dir):
             # ── 快速完整编译  (visible when entry == "快速完整编译") ──
             MenuSection("Quick Build", visible_when=lambda s: s.get("entry") == "快速完整编译", items=[
                 MenuItem("编译模式", "quick_mode", FieldType.CHOICE,
-                         value="release", options=QUICK_MODES),
+                         value="release", options=QUICK_MODES,
+                         disabled_options_provider=_disabled_quick_modes,
+                         refreshes=["family", "project"]),
                 MenuItem("编译线程数", "quick_threads", FieldType.TEXT,
                          value=str(default_threads)),
             ]),
             # ── 高级构建  (visible when entry == "高级构建") ──
             MenuSection("Advanced Build", visible_when=lambda s: s.get("entry") == "高级构建", items=[
                 MenuItem("构建模式", "adv_mode", FieldType.CHOICE,
-                         value="sensorhub-ota", options=ADV_MODES),
+                         value="sensorhub-ota", options=ADV_MODES,
+                         options_provider=_advanced_mode_options,
+                         disabled_options_provider=_disabled_advanced_modes,
+                         refreshes=["family", "project"]),
                 MenuItem("重新加载 defconfig", "adv_reload_defconfig", FieldType.TOGGLE,
                          value=True),
                 MenuItem("使用默认版本", "adv_use_default_version", FieldType.TOGGLE,
@@ -826,7 +888,8 @@ def collect_tui_build_plan(project_root, configs_dir):
                 MenuItem("main/fw/ota BUILD_TYPE", "adv_main_build_type", FieldType.CHOICE,
                          value="默认", options=BUILD_TYPE_OPTS),
                 MenuItem("sensorhub BUILD_TYPE", "adv_sensorhub_build_type", FieldType.CHOICE,
-                         value="默认", options=BUILD_TYPE_OPTS),
+                         value="默认", options=BUILD_TYPE_OPTS,
+                         enabled_when=lambda s: s.get("family") not in NO_SENSORHUB_SIM_FAMILIES),
                 MenuItem("写入构建日志", "adv_log", FieldType.TOGGLE,
                          value=True),
                 MenuItem("编译线程数", "adv_threads", FieldType.TEXT,
@@ -911,6 +974,8 @@ def collect_interactive_plan(project_root, configs_dir):
             project_root,
             configs_dir,
             "未找到可编译的 defconfig",
+            additional_families=ADDITIONAL_FAMILIES,
+            project_provider=build_projects,
         )
 
         while True:
@@ -996,7 +1061,11 @@ class ManifestStatus:
     content_identical: bool = False
 
 
-def check_repo_manifest_status(project_root, project):
+def supports_global_default_manifest(family):
+    return family not in NO_SENSORHUB_SIM_FAMILIES
+
+
+def check_repo_manifest_status(project_root, project, family=None):
     """Pure read-only manifest check — no print, no input, no sys.exit."""
     project = logical_project_name(project)
     repo_dir = os.path.join(project_root, ".repo")
@@ -1021,9 +1090,9 @@ def check_repo_manifest_status(project_root, project):
     if current_include_names:
         current_display = ", ".join(current_include_names)
 
-    # huamiOS.xml is the global default
+    # huamiOS.xml is the global default only for families that support it.
     huamios_xml_path = os.path.join(manifests_dir, "huamiOS.xml")
-    if os.path.exists(huamios_xml_path):
+    if supports_global_default_manifest(family) and os.path.exists(huamios_xml_path):
         if manifest_matches_xml(
             manifest_path, current_xml_name, current_include_names,
             "huamiOS.xml", huamios_xml_path,
@@ -1079,7 +1148,7 @@ def print_manifest_check_summary(current_xml, target_xml, should_switch, missing
     print(f"{YELLOW}是否需要变更 XML: {'是' if should_switch else '否'}{RESET}")
 
 
-def compare_repo_manifest(project_root, project):
+def compare_repo_manifest(project_root, project, family=None):
     project = logical_project_name(project)
     repo_dir = os.path.join(project_root, ".repo")
     manifest_path = os.path.join(repo_dir, "manifest.xml")
@@ -1101,7 +1170,7 @@ def compare_repo_manifest(project_root, project):
         current_display_name = ", ".join(current_include_names)
 
     huamios_xml_path = os.path.join(manifests_dir, "huamiOS.xml")
-    if os.path.exists(huamios_xml_path):
+    if supports_global_default_manifest(family) and os.path.exists(huamios_xml_path):
         if manifest_matches_xml(
             manifest_path,
             current_xml_name,
@@ -1139,7 +1208,15 @@ def compare_repo_manifest(project_root, project):
 
 
 def resolve_defconfig_paths(project_root, configs_dir, family, project):
-    defconfig_main = os.path.join(configs_dir, family, f"{family}_{project}_defconfig")
+    defconfig_prefix = build_defconfig_prefix(family)
+    defconfig_main = os.path.join(
+        configs_dir, family, f"{defconfig_prefix}_{project}_defconfig"
+    )
+    if family in NO_SENSORHUB_SIM_FAMILIES:
+        if os.path.exists(defconfig_main):
+            return os.path.basename(defconfig_main), None
+        fail(f"未找到项目主 defconfig: {defconfig_prefix}_{project}_defconfig")
+
     sensorhub_defconfig = os.path.join(
         configs_dir, family, f"{family}_{project}_sensorhub_defconfig"
     )
@@ -1471,10 +1548,12 @@ def maybe_prompt_post_build_flash(plan, build_dir, logger=None):
 def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
     ensure_python3_default()
     infer_plan_target_from_config(plan, build_dir)
+    if getattr(plan, "_mode_implicit", False):
+        plan.mode = "ota" if plan.family in NO_SENSORHUB_SIM_FAMILIES else "sensorhub-ota"
     configure_plan_version(project_root, plan)
     plan = normalize_plan(plan)
 
-    if plan.family not in find_available_families(configs_dir):
+    if plan.family not in build_families(configs_dir):
         fail(f"无效芯片目录: {plan.family}")
 
     main_defconfig, sensorhub_defconfig = resolve_defconfig_paths(
@@ -1496,7 +1575,7 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
             logger.line(f"BuildPlan: {json.dumps(asdict(plan), ensure_ascii=False)}")
 
         if not plan.use_current_config and not getattr(plan, "_tui_xml_checked", False):
-            if not compare_repo_manifest(project_root, plan.project):
+            if not compare_repo_manifest(project_root, plan.project, plan.family):
                 sys.exit(0)
 
         if plan.mode == "sim":

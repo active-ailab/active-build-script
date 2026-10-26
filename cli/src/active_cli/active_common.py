@@ -365,19 +365,26 @@ def logical_project_name(project):
     return project
 
 
-def find_available_families(configs_dir):
+def find_available_families(configs_dir, additional_families=()):
     if not os.path.isdir(configs_dir):
         return []
+    allowed_families = tuple(dict.fromkeys(ALLOWED_FAMILIES + tuple(additional_families)))
     return [
         name
-        for name in ALLOWED_FAMILIES
+        for name in allowed_families
         if os.path.isdir(os.path.join(configs_dir, name))
     ]
 
 
-def list_projects(project_root, configs_dir, family):
+def list_projects(
+    project_root,
+    configs_dir,
+    family,
+    defconfig_prefix=None,
+    require_sensorhub=True,
+):
     family_dir = os.path.join(configs_dir, family)
-    prefix = f"{family}_"
+    prefix = f"{defconfig_prefix or family}_"
     suffix = "_defconfig"
     projects = []
 
@@ -394,11 +401,12 @@ def list_projects(project_root, configs_dir, family):
             parts = project.split("_")
             if len(parts) > 1 and parts[-1] not in MHS003_ALLOWED_VARIANT_SUFFIXES:
                 continue
-        sensorhub_defconfig = os.path.join(
-            family_dir, f"{family}_{project}_sensorhub_defconfig"
-        )
-        if not os.path.exists(sensorhub_defconfig):
-            continue
+        if require_sensorhub:
+            sensorhub_defconfig = os.path.join(
+                family_dir, f"{family}_{project}_sensorhub_defconfig"
+            )
+            if not os.path.exists(sensorhub_defconfig):
+                continue
         projects.append(project)
     return sorted(set(projects))
 
@@ -485,14 +493,24 @@ def prompt_yes_no(prompt, default=True, allow_back=False):
         print(f"{RED}请输入 y/yes 或 n/no{back_hint}{RESET}")
 
 
-def prompt_family_project(project_root, configs_dir, empty_message):
-    families = find_available_families(configs_dir)
+def prompt_family_project(
+    project_root,
+    configs_dir,
+    empty_message,
+    additional_families=(),
+    project_provider=None,
+):
+    families = find_available_families(configs_dir, additional_families)
     if not families:
         fail("configs 下未找到可用芯片目录")
 
+    project_provider = project_provider or (
+        lambda root, config_path, family: list_projects(root, config_path, family)
+    )
+
     while True:
         family = prompt_choice("请选择芯片目录", families)
-        projects = list_projects(project_root, configs_dir, family)
+        projects = project_provider(project_root, configs_dir, family)
         if not projects:
             fail(f"{family} 下{empty_message}")
 
