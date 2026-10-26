@@ -4,6 +4,7 @@
 import argparse
 import curses
 import filecmp
+import glob
 import json
 import multiprocessing
 import os
@@ -60,7 +61,7 @@ HELP_TEXT = """\
 核心参数:
   -f <family>       family / 芯片目录，例如 mhs003、mhs003s、apollo4、apollo5
   -p <project>      项目名称，例如 cologne、geneva、atlas
-  -m <mode>         完整构建模式：fw、ota、sensorhub、sensorhub-fw、sensorhub-ota、debug、release、sim
+  -m <mode>         完整构建模式：fw、fw-only、ota、sensorhub、sensorhub-fw、sensorhub-ota、debug、release、sim
   -j <threads>      构建线程数
   -c <mode>         使用当前 build/.config 继续编译；app 会按 fw 处理
 
@@ -76,7 +77,9 @@ HELP_TEXT = """\
   -h                显示帮助
 
 支持的 mode:
-  fw, firmware, app, ota, sensorhub, sensorhub-fw, sensorhub-firmware, sensorhub-ota, debug, release, sim
+  fw, firmware, app, fw-only, ota, sensorhub, sensorhub-fw, sensorhub-firmware, sensorhub-ota, debug, release, sim
+
+fw-only 会编译固件并生成 fw_only ZIP，不生成完整 OTA 资源包，也不触发烧录。
 
 apollo4 / apollo5 不支持 sensorhub 和 sim；debug / release 快捷入口执行主工程 OTA。
 apollo5 主 defconfig 使用 apollo330_<project>_defconfig 命名。
@@ -285,6 +288,8 @@ def normalize_mode(mode, family=None):
         "fw": "firmware",
         "firmware": "firmware",
         "app": "firmware",
+        "fw-only": "fw-only",
+        "fw_only": "fw-only",
         "ota": "ota",
         "sensorhub": "sensorhub",
         "senserhub": "sensorhub",
@@ -679,7 +684,7 @@ def collect_interactive_advanced_plan(family, project, default_version, default_
         if step == 0:
             mode = prompt_choice(
                 "请选择高级构建模式",
-                ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
+                ["firmware", "fw-only", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"],
                 allow_back=True,
             )
             if is_back(mode):
@@ -798,11 +803,11 @@ def collect_tui_build_plan(project_root, configs_dir):
 
     BUILD_TYPE_OPTS = ["默认", "debug", "inspect", "release_log", "release"]
     QUICK_MODES = ["release", "debug", "sim"]
-    ADV_MODES = ["firmware", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
+    ADV_MODES = ["firmware", "fw-only", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
 
     def _advanced_mode_options(state):
         if state.get("family") in NO_SENSORHUB_SIM_FAMILIES:
-            return ["ota", "firmware"] + ADV_MODES[2:]
+            return ["firmware", "fw-only", "ota", "sensorhub", "sensorhub-firmware", "sensorhub-ota"]
         return ADV_MODES
 
     def _disabled_quick_modes(state):
@@ -1370,14 +1375,22 @@ def make_ota_version_args(plan):
     return [f"BUILD_FW_VER={shlex.quote(plan.version)}"]
 
 
-def make_cmd(plan, target=None, stage=None, appdir=None, build_dir_var=None, threads=None):
+def make_cmd(
+    plan,
+    target=None,
+    stage=None,
+    appdir=None,
+    build_dir_var=None,
+    threads=None,
+    include_fw_version=False,
+):
     parts = ["make"]
     if target:
         parts.append(target)
     build_type = command_build_type(plan, stage)
     if build_type and target not in {"clean", "distclean"}:
         parts.append(f"BUILD_TYPE={build_type}")
-    if target == "ota":
+    if target == "ota" or include_fw_version:
         parts.extend(make_ota_version_args(plan))
     if build_dir_var:
         parts.append(f"BUILD_DIR={build_dir_var}")
@@ -1386,6 +1399,173 @@ def make_cmd(plan, target=None, stage=None, appdir=None, build_dir_var=None, thr
     if threads:
         parts.append(f"-j{threads}")
     return quote_cmd(parts)
+
+
+def read_make_list(config_path, key):
+    """Read a concrete whitespace-separated variable emitted in config.mk."""
+    values = []
+    if not os.path.isfile(config_path):
+        return values
+    assignment = re.compile(r"^\s*" + re.escape(key) + r"\s*(?::=|\+=|\?=|=)\s*(.*?)\s*$")
+    with open(config_path, "r", encoding="utf-8", errors="ignore") as file:
+        for line in file:
+            match = assignment.match(line)
+            if not match:
+                continue
+            try:
+                values.extend(shlex.split(match.group(1), comments=True))
+            except ValueError as error:
+                fail(f"解析 {config_path} 中的 {key} 失败: {error}")
+    return values
+
+
+def resolve_fw_only_output_paths(build_dir):
+    config_path = os.path.join(build_dir, ".config")
+    app = read_config_value(config_path, "HMI_BUILD_APP")
+    board = read_config_value(config_path, "HMI_BUILD_BOARD")
+    if not app or not board:
+        fail(f"当前配置缺少 HMI_BUILD_APP / HMI_BUILD_BOARD: {config_path}")
+    binary_dir = os.path.join(build_dir, "out", f"{app}@{board}", "binary")
+    extfw_dir = os.path.join(binary_dir, "extfw")
+    return config_path, app, board, binary_dir, extfw_dir
+
+
+def resolve_source_path(build_dir, path):
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    return os.path.normpath(os.path.join(build_dir, path))
+
+
+def expand_source_matches(build_dir, source_entry, kind):
+    source_pattern = resolve_source_path(build_dir, source_entry)
+    matches = sorted(glob.glob(source_pattern, recursive=True))
+    kind_name = "固件" if kind == "file" else "目录"
+    if kind == "file":
+        matches = [path for path in matches if os.path.isfile(path)]
+    elif kind == "directory":
+        matches = [path for path in matches if os.path.isdir(path)]
+    if not matches:
+        fail(f"fw_only 外部{kind_name}不存在或通配符无匹配: {source_pattern}")
+    return matches
+
+
+def stage_fw_only_external_inputs(build_dir, project_root, logger=None):
+    config_path, app, board, binary_dir, extfw_dir = resolve_fw_only_output_paths(build_dir)
+    config_mk = os.path.join(build_dir, "out", f"{app}@{board}", "config.mk")
+    if not os.path.isfile(config_mk):
+        fail(f"固件构建未生成 config.mk，无法准备 fw_only 输入: {config_mk}")
+    os.makedirs(extfw_dir, exist_ok=True)
+
+    for source_entry in read_make_list(config_mk, "HMI_SDK_EXTERNAL_FW"):
+        for source in expand_source_matches(build_dir, source_entry, "file"):
+            destination = os.path.join(extfw_dir, os.path.basename(source))
+            if os.path.realpath(source) != os.path.realpath(destination):
+                shutil.copy2(source, destination)
+            if logger:
+                logger.line(f"fw_only external firmware: {source} -> {destination}")
+
+    for mapping in read_make_list(config_mk, "HMI_SDK_CUSTOM_CP_DIR"):
+        if ":" not in mapping:
+            fail(f"无效 HMI_SDK_CUSTOM_CP_DIR 配置: {mapping}")
+        source_entry, relative_destination = mapping.rsplit(":", 1)
+        destination = os.path.abspath(os.path.join(extfw_dir, relative_destination))
+        if os.path.commonpath([os.path.abspath(extfw_dir), destination]) != os.path.abspath(extfw_dir):
+            fail(f"HMI_SDK_CUSTOM_CP_DIR 目标超出 extfw 目录: {mapping}")
+        for source in expand_source_matches(build_dir, source_entry, "directory"):
+            # The existing Make rule runs `cp -rf <source> <destination>` after
+            # creating <destination>, which retains the source directory name.
+            source_destination = os.path.join(destination, os.path.basename(source))
+            shutil.copytree(source, source_destination, dirs_exist_ok=True)
+            if logger:
+                logger.line(f"fw_only external directory: {source} -> {source_destination}")
+
+    exporter = os.path.join(project_root, "build", "scripts", "export_sensor_extfw_bins.py")
+    if os.path.isfile(exporter):
+        rel_extfw = os.path.relpath(extfw_dir, build_dir)
+        run_cmd(
+            f"python scripts/export_sensor_extfw_bins.py .config {shlex.quote(rel_extfw)}",
+            logger,
+        )
+
+    sign_enabled = read_config_value(config_path, "HMI_FIRMWARE_SIGN_ENABLE") == "y"
+    fw_name = f"{app}@{board}{'_sign' if sign_enabled else ''}.bin"
+    fw_path = os.path.join(binary_dir, fw_name)
+    if not os.path.isfile(fw_path) or os.path.getsize(fw_path) == 0:
+        fail(f"fw_only 主固件产物不存在或为空: {fw_path}")
+
+    pem_path = os.path.join(build_dir, "sign.pem")
+    if not os.path.isfile(pem_path):
+        fail(f"fw_only 签名文件不存在: {pem_path}")
+
+    if read_config_value(config_path, "HMI_MULTI_BIN_ENABLE") == "y":
+        fake_exbin = read_config_value(config_path, "HMI_PSRAM_EXBIN_FAKE_FW") == "y"
+        suffix = "_exbin_fake_sign.bin" if fake_exbin else "_exbin_sign.bin"
+        exbin_path = os.path.join(binary_dir, f"{app}@{board}{suffix}")
+        if not os.path.isfile(exbin_path) or os.path.getsize(exbin_path) == 0:
+            fail(f"fw_only 多 bin 固件产物不存在或为空: {exbin_path}")
+        if fake_exbin:
+            real_exbin_path = os.path.join(binary_dir, "firmware_exbin_sign.bin_real")
+            if not os.path.isfile(real_exbin_path) or os.path.getsize(real_exbin_path) == 0:
+                fail(f"fw_only 多 bin 真机固件产物不存在或为空: {real_exbin_path}")
+
+    if read_config_value(config_path, "BX_CHIP_RTL8763EFL") == "y":
+        bin_path = ""
+        if read_config_value(config_path, "BX_CHIP_RTL8763EFL_SUPPORT_CUSTOM_BIN_PATH") == "y":
+            bin_path = read_config_value(config_path, "BX_CHIP_RTL8763EFL_BIN_FOLDER") or ""
+        rtl_path = os.path.join(extfw_dir, bin_path, "rtl8763_pack.bin")
+        if not os.path.isfile(rtl_path):
+            fail(f"fw_only 缺少 RTL 外部固件: {rtl_path}")
+
+    if (
+        read_config_value(config_path, "HMI_BOARD_MHS003S") == "y"
+        and read_config_value(config_path, "HMI_LCPU_NORFLASH_XIP_LOAD") == "y"
+    ) or read_config_value(config_path, "HMI_LCPU_VFS_LOAD") == "y":
+        lcpu_name = read_config_value(config_path, "HMI_LCPU_FILE_NAME")
+        lcpu_path = os.path.join(extfw_dir, lcpu_name or "")
+        if not lcpu_name or not os.path.isfile(lcpu_path):
+            fail(f"fw_only 缺少 LCPU 外部固件: {lcpu_path}")
+
+    if read_config_value(config_path, "HMI_NFC_FW_LOAD_FROM_FS") == "y":
+        nfc_config_path = read_config_value(config_path, "HMI_NFC_FW_FILE_PATH") or ""
+        nfc_path = os.path.join(extfw_dir, os.path.basename(nfc_config_path))
+        if not nfc_config_path or not os.path.isfile(nfc_path):
+            fail(f"fw_only 缺少 NFC 外部固件: {nfc_path}")
+
+    return config_path, binary_dir, extfw_dir
+
+
+def read_os_version_ab(project_root):
+    version_path = os.path.join(project_root, "build", "os_version.mk")
+    values = {}
+    assignment = re.compile(r"^\s*(OS_VERSION_(?:AB|MAJOR|MINOR))\s*(?::=|\?=|=)\s*([^#\s]+)")
+    if os.path.isfile(version_path):
+        with open(version_path, "r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                match = assignment.match(line)
+                if match:
+                    values[match.group(1)] = match.group(2)
+    if values.get("OS_VERSION_AB") and "$" not in values["OS_VERSION_AB"]:
+        return values["OS_VERSION_AB"]
+    major = values.get("OS_VERSION_MAJOR")
+    minor = values.get("OS_VERSION_MINOR")
+    return f"{major}.{minor}" if major and minor else None
+
+
+def resolve_fw_only_package_version(project_root, build_dir, plan):
+    if not plan_uses_build_fw_ver(plan):
+        version = read_config_value(os.path.join(build_dir, ".config"), "BOARD_FIRMWARE_VERSION")
+        if not version:
+            fail("当前 .config 缺少 BOARD_FIRMWARE_VERSION，无法确定 fw_only 包版本")
+        return version
+
+    parts = str(plan.version).split(".")
+    strategy = os.environ.get("FW_VER_STRATEGY", "legacy").strip()
+    if len(parts) == 2 or strategy == "os_global":
+        os_version_ab = read_os_version_ab(project_root)
+        if not os_version_ab:
+            fail("无法从 build/os_version.mk 解析 OS_VERSION_AB，不能确定 fw_only 包版本")
+        return f"{os_version_ab}.{'.'.join(parts[-2:])}"
+    return plan.version
 
 
 def run_main_cmd(cmd, plan, logger=None):
@@ -1544,6 +1724,11 @@ def post_build_flash_command(mode):
 
 
 def maybe_prompt_post_build_flash(plan, build_dir, logger=None):
+    if plan.mode == "fw-only":
+        print(f"{YELLOW}fw-only 仅生成升级包，不触发烧录。{RESET}")
+        if logger:
+            logger.line("skip post-build flash: fw-only package mode")
+        return
     command = post_build_flash_command(plan.mode)
     if not command:
         return
@@ -1616,6 +1801,37 @@ def run_build_plan(plan, start_dir, project_root, configs_dir, build_dir):
         elif plan.mode == "ota":
             prepare_main_config(build_dir, plan, main_defconfig, logger, clean=plan.reload_defconfig)
             run_main_cmd(make_cmd(plan, "ota", stage="main", threads=plan.threads), plan, logger)
+        elif plan.mode == "fw-only":
+            if plan.family not in NO_SENSORHUB_SIM_FAMILIES:
+                if not plan.use_current_config:
+                    build_sensorhub(
+                        build_dir,
+                        project_root,
+                        plan,
+                        main_defconfig,
+                        sensorhub_defconfig,
+                        logger,
+                        clean=plan.reload_defconfig,
+                    )
+                apply_version_override(build_dir, plan, logger)
+            else:
+                prepare_main_config(build_dir, plan, main_defconfig, logger, clean=plan.reload_defconfig)
+
+            main_fw_cmd = make_cmd(plan, stage="main", include_fw_version=True)
+            main_fw_cmd += f" JOBS={shlex.quote(str(plan.threads))}"
+            run_main_cmd(main_fw_cmd, plan, logger)
+
+            _, binary_dir, _ = stage_fw_only_external_inputs(build_dir, project_root, logger)
+            package_version = resolve_fw_only_package_version(project_root, build_dir, plan)
+            run_cmd(f"python scripts/ota_gen_zip.py {shlex.quote(package_version)}", logger)
+
+            _, app, board, _, _ = resolve_fw_only_output_paths(build_dir)
+            signed_package = os.path.join(binary_dir, f"{app}@{board}_fw_only_sign.zip")
+            if not os.path.isfile(signed_package) or os.path.getsize(signed_package) == 0:
+                fail(f"fw_only 签名包未生成或为空: {signed_package}")
+            print(f"{GREEN}fw_only 签名包: {signed_package}{RESET}")
+            if logger:
+                logger.line(f"fw_only signed package: {signed_package}")
         elif plan.mode == "sensorhub":
             build_sensorhub(
                 build_dir,

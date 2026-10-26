@@ -24,6 +24,7 @@ description: 当用户要求通过 active-build CLI 构建 Active/Zepp 工作区
 - 成功或失败后，可通过本地 Lark MCP 发送通知；通知内容只允许简述构建计划与结果，不要发送文件路径、日志路径或大段输出。
 - 多个构建或 bstyle 任务需要先整体确认，再按顺序串行执行。
 - 交互终端中，固件构建成功后 CLI 会默认进入烧录确认流程，由用户确认是否执行当前构建模式对应的 `v3dl app` 或 `v3dl ota`；agent 不需要额外增加烧录参数。
+- `fw-only` 只编译并生成 fw_only ZIP，完成后不进入烧录确认，也不执行 `v3dl app` 或 `v3dl ota`。
 - `sensorhub` 和 `sim` 构建成功后直接跳过烧录确认；非交互终端也会跳过烧录确认。
 
 ## 静默执行模式
@@ -94,7 +95,7 @@ active-build -i <plan-file>
 
 若 BuildPlan 中没有绝对路径 `workspace`，则应在目标工作区内执行；若从其他目录执行，则追加 `-w <workspace>`。
 8. 命令启动后，按"静默执行模式"等待命令结束；仅在命令结束或终止后统一回溯结果。
-9. 如果 CLI 在交互终端中进入编译后烧录确认，只转交用户确认；`firmware` / `sensorhub-firmware` 会执行 `v3dl app`，`ota` / `sensorhub-ota` 会执行 `v3dl ota`，`sensorhub` / `sim` 不触发烧录确认。
+9. 如果 CLI 在交互终端中进入编译后烧录确认，只转交用户确认；`firmware` / `sensorhub-firmware` 会执行 `v3dl app`，`ota` / `sensorhub-ota` 会执行 `v3dl ota`，`fw-only` / `sensorhub` / `sim` 不触发烧录确认。
 
 bstyle 编译按下面流程执行：
 
@@ -140,7 +141,8 @@ CLI 接收的 BuildPlan 字段如下：
 规则：
 
 - `action` 为 `build` 时执行固件构建。
-- `mode` 支持 `fw`、`firmware`、`app`、`ota`、`sensorhub`、`sensorhub-fw`、`sensorhub-firmware`、`sensorhub-ota`、`debug`、`release`、`sim`。
+- `mode` 支持 `fw`、`firmware`、`app`、`fw-only`、`ota`、`sensorhub`、`sensorhub-fw`、`sensorhub-firmware`、`sensorhub-ota`、`debug`、`release`、`sim`。
+- `fw-only` 编译固件并生成签名 fw_only ZIP，不生成完整 OTA 资源包；完整构建时，支持 sensorhub 的芯片先按现有流程准备 sensorhub 产物，Apollo4/Apollo5 只构建主固件。`-c fw-only` 延用现有配置和 sensorhub 产物，不重新配置或清理 sensorhub 输出。该模式结束后不会触发烧录。
 - `apollo4` 和 `apollo5` 为无 sensorhub 芯片：不支持 `sensorhub` 相关 mode 或 `sim`；TUI 中这些选项置灰，CLI 直接调用时返回明确错误。两者的 `debug` / `release` 快捷入口执行主工程 OTA，`release` 仍使用 `BUILD_TYPE=release`。
 - `apollo5` 的主 defconfig 文件名以 `apollo330` 开头，格式为 `apollo330_<project>_defconfig`。
 - `app` 会被 CLI 规范化为 `firmware`。
@@ -149,10 +151,10 @@ CLI 接收的 BuildPlan 字段如下：
 - 但在 CLI 实际拼接 `make` 指令时，只有 `release` 会被写入运行命令；其他 build type 只保留在 BuildPlan 语义层。
 - `threads` 必须是正整数。agent 生成 BuildPlan 时，用户未指定则默认用 `"8"`。
 - `reload_defconfig` 在完整重配时通常为 `true`；只有明确延用当前工作区已有编译配置时，才设为 `false`。
-- `version` 是唯一版本输入字段，不新增 `fw_ver_strategy` 等字段。旧工程中它用于覆写 `BOARD_FIRMWARE_VERSION`；新工程中它用于 OTA 阶段的 `BUILD_FW_VER`。
+- `version` 是唯一版本输入字段，不新增 `fw_ver_strategy` 等字段。旧工程中它用于覆写 `BOARD_FIRMWARE_VERSION`；新工程中 `ota` 和 `fw-only` 使用它设置构建版本。
 - `version_explicit` 表示 BuildPlan 是否显式要求版本；BuildPlan JSON 中包含 `version` 但未写 `version_explicit` 时，CLI 会按 `true` 处理。
 - 新工程以 `build/build_rules/fw_version.mk` 为识别条件；未显式传入版本时默认使用 `999.999`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本，三段 `10.0.0` 会被拒绝。
-- 新工程只在 `make ota` 阶段下发版本：默认 `999.999` 或两段版本会追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`；四段版本只追加 `BUILD_FW_VER=<version>`。defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 阶段不追加版本变量。
+- 新工程的普通 firmware、sensorhub 和 `silentoldconfig` 阶段不追加版本变量。`ota` 阶段按现有规则传版本；`fw-only` 在主固件编译命令阶段传版本，并把解析后的最终版本交给单包脚本签名。
 - `use_current_config` 为 `true` 时，可省略 `family` 和 `project`，由 CLI 从 `build/.config` 推断。
 - `workspace` 可以是工作区根目录，也可以是其 `build/` 目录。
 - `log` 控制是否写入 `build/logs/active-build/`。
@@ -181,9 +183,9 @@ active-bstyle [-i input.style | -i <dir>] [-o output.bstyle | -o <dir>] [-f fami
 
 - 旧工程（未检测到 `build/build_rules/fw_version.mk`）保持原来的 `.config` 覆写逻辑：main/fw/ota 写 `build/.config`，纯 `sensorhub` 显式版本写 `build/out_hub/.config`，并执行对应 `silentoldconfig`。
 - 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config` 中的 `BOARD_FIRMWARE_VERSION`。
-- 新工程只在 `make ota` 阶段追加版本变量；默认 `999.999` 或显式两段版本追加 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只追加 `BUILD_FW_VER=<version>`。
+- 新工程的 `ota` 阶段按现有规则追加版本变量；`fw-only` 在主固件编译命令阶段传版本，并把解析后的最终版本交给单包脚本签名。
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量。
-- `use_current_config=true` 在旧工程中仍默认跳过版本覆写；新工程默认或显式版本只影响 OTA 阶段版本参数。
+- `use_current_config=true` 在旧工程中仍默认跳过版本覆写；新工程默认或显式版本影响 OTA 或 `fw-only` 阶段参数。
 
 ## 用户只说"编译"时
 
@@ -236,7 +238,7 @@ configs/<family>/<family>_<project>_sensorhub_defconfig
 
 - 若用户给了 project/module，先把它作为 `project` 候选，再校验其在 `configs/<family>/` 下是否存在。
 - 若用户给了 family，则在该 family 下校验目标 project。
-- 若用户要求使用当前配置继续编译，则设置 `use_current_config: true`，并使用用户指定的 `mode`，例如 `fw`、`ota`、`sensorhub-ota`。
+- 若用户要求使用当前配置继续编译，则设置 `use_current_config: true`，并使用用户指定的 `mode`，例如 `fw`、`fw-only`、`ota`、`sensorhub-ota`。
 - 若用户要求 `app`，可使用 `mode: "app"` 或 `mode: "fw"`；CLI 会将其视为 firmware。
 - 若用户提到 debug/release/sim，需要区分"快捷入口"和"最终 mode 配置"。
 - BuildPlan 对用户展示和最终确认时，不要把 `debug` 或 `release` 作为最终 `mode` 值，改用明确的实际模式，例如 `sensorhub-ota`；apollo4/apollo5 使用 `ota`。

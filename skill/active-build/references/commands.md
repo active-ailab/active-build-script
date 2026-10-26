@@ -54,6 +54,7 @@ active-build
 ```
 
 交互式流程会选择 family、project、构建入口、mode、可选 BUILD_TYPE、日志开关与线程数。
+高级构建模式列表包含 `fw-only`；选择后只编译固件并生成签名 fw_only ZIP，不触发烧录确认。
 
 ## 独立 bstyle 编译
 
@@ -100,15 +101,18 @@ configs/<family>/<family>_<project>_defconfig
 ```sh
 active-build -f mhs003 -p cologne -m debug -j 8
 active-build -f mhs003s -p atlas -m sensorhub-ota -j 8 -b release
+active-build -f mhs003s -p atlas -m fw-only -j 8
 active-build -F mhs003s -P atlas -M sensorhub -J 8 -D -V 6.1.23.4
 ```
 
 支持的 mode：
 
 ```text
-fw, firmware, app, ota, sensorhub, sensorhub-fw, sensorhub-firmware,
+fw, firmware, app, fw-only, ota, sensorhub, sensorhub-fw, sensorhub-firmware,
 sensorhub-ota, debug, release, sim
 ```
+
+`fw-only` 编译主固件（完整构建时，支持 sensorhub 的芯片会先按现有流程准备 sensorhub 产物），整理包所需的外部固件后生成 fw_only ZIP；跳过完整 OTA 资源包和 OTA ZIP。`-c fw-only` 复用当前配置及已有 sensorhub 产物，不重新配置或清理 sensorhub 输出。完成后不触发烧录提示或 `v3dl` 命令。
 
 支持的 build type：
 
@@ -124,7 +128,7 @@ debug, inspect, release_log, release
 - `apollo5` 主 defconfig 路径为 `configs/apollo5/apollo330_<project>_defconfig`。
 - `huamiOS.xml` 全局默认 manifest 仅适用于旧芯片；Apollo4/Apollo5 必须匹配项目专属的 `<project>.xml`，使用 `huamiOS.xml` 时会提示需要切换。
 - `-b/-a/-u` 都会保留在 BuildPlan 语义中，但实际拼接 `make` 命令时，只有 `release` 会写入 `BUILD_TYPE=release`；`debug`、`inspect`、`release_log` 不会写入运行命令。
-- `-v/-V` 继续映射到 BuildPlan 的 `version` 字段。旧工程中它表示显式 `.config` 版本覆写；新工程中它表示 OTA 阶段的 `BUILD_FW_VER`。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本。
+- `-v/-V` 继续映射到 BuildPlan 的 `version` 字段。旧工程中它表示显式 `.config` 版本覆写；新工程中它用于 `ota` 或 `fw-only` 阶段。新工程只接受两段 `c.d` 或四段 `a.b.c.d` 数字版本。
 
 完整编译过程中，CLI 可能会：
 
@@ -132,13 +136,14 @@ debug, inspect, release_log, release
 - 在需要时询问是否继续
 - 在 `reload_defconfig=true` 时执行 `distclean` 与 `clean`
 - 旧工程（未检测到 `build/build_rules/fw_version.mk`）按原逻辑覆写 `BOARD_FIRMWARE_VERSION` 并执行对应 `silentoldconfig`
-- 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config`，只在 `make ota` 阶段下发版本变量
+- 新工程（检测到 `build/build_rules/fw_version.mk`）不 patch `.config`；`ota` 阶段按原规则传版本，`fw-only` 在主固件编译命令阶段传版本并把解析后的最终版本用于 ZIP 签名
 - 新工程默认 `999.999` 或显式两段版本生成 `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`，显式四段版本只生成 `BUILD_FW_VER=<version>`
 - 新工程的 defconfig、普通 firmware、sensorhub 和 `silentoldconfig` 命令都不追加版本变量
 - 在 `build/out_hub/` 下构建 sensorhub
 - 常规 family/project 校验依赖 main defconfig 与 sensorhub defconfig，不强制依赖产品目录；`apollo4` / `apollo5` 只使用主工程 defconfig
 - 执行 firmware 或 ota 阶段
-- 交互终端中，构建成功后默认进入烧录确认流程；`firmware` / `sensorhub-firmware` 确认后执行 `v3dl app`，`ota` / `sensorhub-ota` 确认后执行 `v3dl ota`
+- `fw-only` 完成后不触发烧录确认或 `v3dl` 命令
+- 交互终端中，其他固件构建成功后默认进入烧录确认流程；`firmware` / `sensorhub-firmware` 确认后执行 `v3dl app`，`ota` / `sensorhub-ota` 确认后执行 `v3dl ota`
 - `sensorhub` 和 `sim` 构建成功后直接跳过烧录确认；非交互终端也会跳过烧录确认
 
 ## 基于当前配置继续编译
@@ -148,6 +153,7 @@ debug, inspect, release_log, release
 ```sh
 active-build -c app -j 8
 active-build -c fw -j 8
+active-build -c fw-only -j 8
 active-build -c fw -v 10.0.0 -j 8
 active-build -c ota -v 23.4 -j 8
 active-build -c ota -v 6.1.23.4 -j 8
@@ -160,7 +166,7 @@ active-build -c sensorhub-ota -u release -j 8
 - `app` 会被规范化为 firmware / fw。
 - 当前配置模式下，CLI 会从 `build/.config` 中推断 family 与 project。
 - 若工作区已有上次编译信息且用户确认延用，BuildPlan 中应使用 `reload_defconfig=false`。
-- 当前配置模式下，旧工程默认跳过版本号覆写；显式传入 `-v/-V` 或 BuildPlan 中设置 `version_explicit=true` 时仍会按旧规则覆写一次。新工程的默认或显式版本只影响 `make ota` 阶段参数。
+- 当前配置模式下，旧工程默认跳过版本号覆写；显式传入 `-v/-V` 或 BuildPlan 中设置 `version_explicit=true` 时仍会按旧规则覆写一次。新工程的默认或显式版本影响 `ota` 或 `fw-only` 阶段参数。
 - 未显式传入 `-j` 时，CLI 优先复用 `build/.active-build-state.json` 中的 `threads`；旧 `.hmbuild_last_threads` 只作为迁移兼容读取，成功写入新状态后会被清理。
 
 ## BuildPlan 队列

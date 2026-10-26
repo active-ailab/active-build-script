@@ -33,6 +33,8 @@ export PATH="$HOME/.local/bin:$PATH"
 active-build
 ```
 
+在高级构建模式列表中可选择 `fw-only`；此模式生成签名 fw_only ZIP 后结束，不会进入烧录确认。
+
 ### 命令行参数
 
 | 参数 | 说明 |
@@ -58,6 +60,7 @@ active-build
 | 输入 | 归一化 | 实际行为 |
 |------|--------|----------|
 | `fw` / `firmware` / `app` | `firmware` | 编译主固件 |
+| `fw-only` | `fw-only` | 编译固件并生成 fw_only ZIP，不生成完整 OTA 包，不触发烧录 |
 | `ota` | `ota` | 编译 OTA 包 |
 | `sensorhub` | `sensorhub` | 仅编译 sensorhub |
 | `sensorhub-fw` / `sensorhub-firmware` | `sensorhub-firmware` | sensorhub + 固件 |
@@ -77,9 +80,11 @@ active-build
 # 完整编译
 active-build -f mhs003 -p cologne -m debug -j 8
 active-build -f mhs003s -p atlas -m sensorhub-ota -j 8 -b release
+active-build -f mhs003s -p atlas -m fw-only -j 8
 
 # 基于当前配置继续编译
 active-build -c app -j 8
+active-build -c fw-only -j 8
 active-build -c ota -j 8
 active-build -c sensorhub-ota -a release -u release -j 8
 
@@ -141,7 +146,7 @@ active-build -i /tmp/active-build-plan.json -w /home/zepp/workspace/mod
 
 - 默认版本：`999.999`
 - 不 patch 任何 `.config` 文件
-- 版本仅在 `make ota` 阶段通过环境变量传入：
+- `ota` 阶段按现有规则传版本；`fw-only` 在主固件编译命令阶段传入版本，并用解析后的最终版本签名单包：
   - 默认 `999.999` 或两段版本 `c.d` → `FW_VER_STRATEGY=os_global BUILD_FW_VER=<version>`
   - 四段版本 `a.b.c.d` → `BUILD_FW_VER=<version>`（不指定 `FW_VER_STRATEGY`）
 - 只接受两段或四段数字版本，三段 `10.0.0` 会被拒绝
@@ -240,13 +245,14 @@ all  → 依次执行以上两个入口
 
 ## 编译后烧录确认
 
-交互终端中，固件构建成功后会默认进入烧录确认流程，不需要额外参数。
+交互终端中，普通固件/OTA 构建成功后会默认进入烧录确认流程，不需要额外参数。`fw-only` 只生成签名升级包，不进入烧录确认。
 
 规则：
 
 - `firmware` / `sensorhub-firmware`：用户确认后在 `build/` 目录执行 `v3dl app`
 - `ota` / `sensorhub-ota`：用户确认后在 `build/` 目录执行 `v3dl ota`
 - `sensorhub` / `sim`：直接跳过烧录确认
+- `fw-only`：只生成 fw_only ZIP，直接跳过烧录确认
 - 非交互终端：跳过烧录确认，避免脚本化构建卡住
 
 确认默认值为 `N`，直接回车不会烧录。
