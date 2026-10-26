@@ -339,6 +339,17 @@ def default_version_for_project(project_root):
     return DEFAULT_VERSION
 
 
+def decrement_version_tail(version):
+    parts = [int(part) for part in str(version).split(".")]
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] > 0:
+            parts[index] -= 1
+            for trailing_index in range(index + 1, len(parts)):
+                parts[trailing_index] = 9
+            return ".".join(str(part) for part in parts)
+    fail(f"默认版本号无法递减: {version}")
+
+
 def validate_build_fw_ver(version):
     value = validate_version(version)
     if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+\.[0-9]+)?", value):
@@ -352,10 +363,22 @@ def configure_plan_version(project_root, plan):
     if use_build_fw_ver:
         if not plan.version_explicit:
             plan.version = DEFAULT_BUILD_FW_VER
+            if default_release_version(plan):
+                plan.version = decrement_version_tail(plan.version)
         plan.version = validate_build_fw_ver(plan.version)
     else:
+        if not plan.version_explicit and default_release_version(plan):
+            plan.version = decrement_version_tail(plan.version or DEFAULT_VERSION)
         plan.version = validate_version(plan.version or DEFAULT_VERSION)
     return plan
+
+
+def default_release_version(plan):
+    return (
+        str(plan.mode).lower() == "release"
+        or str(plan.main_build_type).lower() == "release"
+        or str(plan.build_type).lower() == "release"
+    )
 
 
 def plan_uses_build_fw_ver(plan):
